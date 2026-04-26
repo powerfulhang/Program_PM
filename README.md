@@ -46,5 +46,9 @@ program-pm
 “初始化 Git”会一次完成：
 
 - 生成或更新 `.gitignore`
+- 生成或更新 `.gitattributes`，减少 Windows 下 LF/CRLF 警告
 - 设置 Git 用户名和邮箱
 - 设置 GitHub SSH 443 端口远程地址
+
+“推送”会先检测远程仓库。如果 GitHub 侧仓库不存在或 SSH key 无权限，
+工具会停止推送并给出明确提示。
