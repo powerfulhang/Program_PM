@@ -191,6 +191,77 @@ def explain_remote_result(result: CommandResult, repo_name: str) -> tuple[bool, 
     return False, f"远程连接失败：{detail or '未知错误'}"
 
 
+def summarize_git_status(status_text: str) -> str:
+    lines = [line for line in status_text.splitlines() if line.strip()]
+    if not lines:
+        return "状态详情：没有未提交的文件改动。"
+
+    summary: list[str] = []
+    changes: list[str] = []
+    for line in lines:
+        if line.startswith("## "):
+            branch = line[3:]
+            branch = branch.replace("...", " 跟踪 ")
+            summary.append(f"当前分支：{branch}")
+            continue
+
+        code = line[:2]
+        path = line[3:] if len(line) > 3 else line
+        if code == "??":
+            changes.append(f"未跟踪：{path}")
+        elif code[0] != " " and code[1] != " ":
+            changes.append(f"已暂存且又有新改动：{path}")
+        elif code[0] != " ":
+            changes.append(f"已暂存：{path}")
+        elif code[1] != " ":
+            changes.append(f"未暂存：{path}")
+        else:
+            changes.append(f"有改动：{path}")
+
+    if not changes:
+        summary.append("文件状态：没有未提交的文件改动。")
+    else:
+        summary.append(f"文件状态：共 {len(changes)} 项改动。")
+        summary.extend(f"- {change}" for change in changes)
+    return "\n".join(summary)
+
+
+def summarize_git_log(log_text: str) -> str:
+    lines = [line for line in log_text.splitlines() if line.strip()]
+    if not lines:
+        return "最近提交：当前仓库还没有提交记录。"
+
+    summary = ["最近提交："]
+    for line in lines:
+        parts = line.split("\t", 2)
+        if len(parts) == 3:
+            commit_hash, refs, subject = parts
+            refs_text = f" [{refs}]" if refs else ""
+            summary.append(f"- {commit_hash}{refs_text}: {subject}")
+        else:
+            summary.append(f"- {line}")
+    return "\n".join(summary)
+
+
+def summarize_simple_git_result(action: str, result: CommandResult) -> str:
+    detail = (result.stderr or result.stdout).strip()
+    if result.returncode == 0:
+        if action == "add":
+            warning = "；Git 提示了换行符转换警告" if detail else ""
+            return f"添加完成：当前改动已加入暂存区{warning}。"
+        if action == "commit":
+            if "nothing to commit" in detail.lower():
+                return "提交未创建：当前没有可提交的暂存改动。"
+            first_line = detail.splitlines()[0] if detail else ""
+            suffix = f"（{first_line}）" if first_line else ""
+            return f"提交成功：已创建本地提交{suffix}。"
+        if action == "fetch":
+            return "获取完成：已从远程仓库更新分支信息，本地文件没有被修改。"
+        if action == "pull":
+            return "拉取完成：远程更新已合并到当前分支。"
+    return f"操作失败：{detail or 'Git 返回了非零状态。'}"
+
+
 def configure_git_remote(project_path: Path, remote_url: str) -> CommandResult:
     """Add or update the Git remote URL.
 
@@ -252,14 +323,15 @@ class Tooltip:
         self.tip_window = tk.Toplevel(self.widget)
         self.tip_window.wm_overrideredirect(True)
         self.tip_window.wm_geometry(f"+{x}+{y}")
-        label = ttk.Label(
+        label = tk.Label(
             self.tip_window,
             text=self.text,
             justify=tk.LEFT,
             background="#ffffe0",
             relief=tk.SOLID,
             borderwidth=1,
-            padding=(8, 5),
+            padx=8,
+            pady=5,
             wraplength=360,
         )
         label.pack()
@@ -413,13 +485,19 @@ class ProgramPmApp(tk.Tk):
         self.branch_var = tk.StringVar(value=DEFAULT_BRANCH)
         self.commit_message_var = tk.StringVar(value="Update project")
         ttk.Label(info, text="仓库名").grid(row=0, column=0, sticky=tk.W)
-        ttk.Entry(info, textvariable=self.repo_name_var, width=28).grid(
+        repo_entry = ttk.Entry(info, textvariable=self.repo_name_var, width=28)
+        repo_entry.grid(
             row=0, column=1, sticky=tk.W, padx=8
         )
+        repo_entry.bind("<FocusOut>", lambda _event: self.refresh_git_status())
+        repo_entry.bind("<Return>", lambda _event: self.refresh_git_status())
         ttk.Label(info, text="默认分支").grid(row=0, column=2, sticky=tk.W, padx=(18, 0))
-        ttk.Entry(info, textvariable=self.branch_var, width=16).grid(
+        branch_entry = ttk.Entry(info, textvariable=self.branch_var, width=16)
+        branch_entry.grid(
             row=0, column=3, sticky=tk.W, padx=8
         )
+        branch_entry.bind("<FocusOut>", lambda _event: self.refresh_git_status())
+        branch_entry.bind("<Return>", lambda _event: self.refresh_git_status())
         ttk.Label(info, text="提交信息").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
         ttk.Entry(info, textvariable=self.commit_message_var).grid(
             row=1, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(8, 0)
@@ -431,7 +509,7 @@ class ProgramPmApp(tk.Tk):
         for label, command, tooltip in [
             (
                 "刷新本地 Git 状态",
-                self.refresh_git_status,
+                self.refresh_git_status_with_output,
                 "刷新当前项目是否为 Git 仓库、当前分支、origin 地址和工作区是否有未提交更改。",
             ),
             (
@@ -440,19 +518,9 @@ class ProgramPmApp(tk.Tk):
                 "检查当前 origin 或仓库名对应的 GitHub SSH 443 远程是否可访问。",
             ),
             (
-                "状态详情",
-                self.git_status_detail,
-                "显示当前分支和文件变更列表，相当于精简版 git status。",
-            ),
-            (
-                "添加全部",
-                self.git_add_all,
-                "把当前项目里的新增、修改、删除全部加入暂存区。",
-            ),
-            (
-                "提交",
-                self.git_commit,
-                "用上方提交信息创建一次本地 Git 提交。",
+                "同步 Git 配置",
+                self.sync_git_config,
+                "按当前仓库名重新设置 Git 用户身份、.gitignore、.gitattributes 和 443 远程地址。",
             ),
             (
                 "获取",
@@ -465,6 +533,21 @@ class ProgramPmApp(tk.Tk):
                 "从 origin 的默认分支拉取并合并到当前分支。",
             ),
             (
+                "状态详情",
+                self.git_status_detail,
+                "用中文显示当前分支、跟踪分支和文件改动列表。",
+            ),
+            (
+                "添加全部",
+                self.git_add_all,
+                "把当前项目里的新增、修改、删除全部加入暂存区。",
+            ),
+            (
+                "提交",
+                self.git_commit,
+                "用上方提交信息创建一次本地 Git 提交。",
+            ),
+            (
                 "推送",
                 self.git_push,
                 "先确认远程仓库可访问，再把当前分支推送到 origin。",
@@ -472,7 +555,7 @@ class ProgramPmApp(tk.Tk):
             (
                 "最近提交",
                 self.git_log,
-                "显示最近 20 条提交记录。",
+                "用中文列表显示最近 20 条提交记录。",
             ),
         ]:
             self.make_button(buttons, label, command, tooltip).pack(
@@ -581,6 +664,12 @@ class ProgramPmApp(tk.Tk):
         self.output.insert(tk.END, text)
         self.output.see(tk.END)
 
+    def append_command_start(self, command_name: str) -> None:
+        self.enqueue(f"\n> {command_name}\n")
+
+    def append_command_done(self) -> None:
+        self.enqueue(">\n")
+
     def enqueue(self, text: str) -> None:
         self.output_queue.put(text)
 
@@ -609,31 +698,60 @@ class ProgramPmApp(tk.Tk):
                     self.enqueue(result.stderr)
                 if result.returncode != 0:
                     self.enqueue(f"[exit {result.returncode}]\n")
+                    self.enqueue(">\n")
                     break
+                self.enqueue(">\n")
             if after:
                 self.after(0, after)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def refresh_git_status(self) -> None:
+    def collect_git_status_text(self) -> str:
         path = self.project_path()
         if not path.exists():
-            self.status_var.set(f"路径不存在：{path}")
-            return
+            return f"路径不存在：{path}"
         inside = run_command(["git", "rev-parse", "--is-inside-work-tree"], path)
         if inside.returncode != 0:
-            self.status_var.set("当前路径尚未初始化 Git")
-            return
+            return "当前路径尚未初始化 Git。请先在“新建项目”页初始化当前项目 Git。"
         branch = run_command(["git", "branch", "--show-current"], path)
         remote = run_command(["git", "remote", "get-url", REMOTE_NAME], path)
         status = run_command(["git", "status", "--short"], path)
+        ahead_behind = run_command(["git", "status", "--short", "--branch"], path)
         remote_text = remote.stdout.strip() if remote.returncode == 0 else "未设置"
         branch_text = branch.stdout.strip() or "(detached)"
-        dirty_text = "有未提交更改" if status.stdout.strip() else "工作区干净"
-        self.status_var.set(
-            f"Git 已连接本地仓库 | 分支：{branch_text} | "
-            f"remote：{remote_text} | {dirty_text}"
+        dirty_text = (
+            f"有 {len(status.stdout.splitlines())} 项未提交文件改动"
+            if status.stdout.strip()
+            else "没有未提交的文件改动"
         )
+        expected_remote = github_remote(
+            sanitize_project_name(self.repo_name_var.get() or path.name)
+        )
+        remote_note = ""
+        if remote.returncode == 0 and remote_text != expected_remote:
+            remote_note = " | 注意：origin 与上方仓库名推导的地址不一致"
+        branch_note = ""
+        branch_line = next(
+            (line for line in ahead_behind.stdout.splitlines() if line.startswith("## ")),
+            "",
+        )
+        if "ahead" in branch_line or "behind" in branch_line:
+            branch_note = f" | 同步状态：{branch_line[3:]}"
+        return (
+            f"Git 本地状态 | 分支：{branch_text} | "
+            f"origin：{remote_text} | 文件：{dirty_text}"
+            f"{branch_note}{remote_note}"
+        )
+
+    def refresh_git_status(self) -> None:
+        self.status_var.set(self.collect_git_status_text())
+
+    def refresh_git_status_with_output(self) -> None:
+        self.append_command_start("刷新本地 Git 状态")
+        status_text = self.collect_git_status_text()
+        self.status_var.set(status_text)
+        self.enqueue(f"{status_text}\n")
+        self.append_command_done()
 
     def git_init(self) -> None:
         branch = self.branch_var.get().strip() or DEFAULT_BRANCH
@@ -641,11 +759,13 @@ class ProgramPmApp(tk.Tk):
         repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
 
         def worker() -> None:
-            self.enqueue("\n正在初始化 Git：生成 .gitignore、设置身份、设置 443 远程...\n")
+            self.append_command_start("初始化当前项目 Git")
+            self.enqueue("正在生成 .gitignore、.gitattributes，并设置身份和 443 远程...\n")
             try:
                 results = initialize_git_repository(path, repo_name, branch)
             except OSError as exc:
                 self.enqueue(f"Git 初始化失败：{exc}\n")
+                self.append_command_done()
                 return
             failed = next((result for result in results if result.returncode != 0), None)
             if failed:
@@ -656,6 +776,7 @@ class ProgramPmApp(tk.Tk):
                     f"身份为 {GITHUB_USER} <{GITHUB_EMAIL}>，"
                     f"远程为 {github_remote(repo_name)}。\n"
                 )
+            self.append_command_done()
             self.after(0, self.refresh_git_status)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -688,40 +809,119 @@ class ProgramPmApp(tk.Tk):
             self.append_output(f"\n设置 443 远程失败：{result.stderr or result.stdout}\n")
         self.refresh_git_status()
 
+    def sync_git_config(self) -> None:
+        branch = self.branch_var.get().strip() or DEFAULT_BRANCH
+        path = self.project_path()
+        repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
+
+        def worker() -> None:
+            self.append_command_start("同步 Git 配置")
+            try:
+                results = initialize_git_repository(path, repo_name, branch)
+            except OSError as exc:
+                self.enqueue(f"同步失败：{exc}\n")
+                self.append_command_done()
+                return
+            failed = next((result for result in results if result.returncode != 0), None)
+            if failed:
+                self.enqueue(f"同步失败：{failed.stderr or failed.stdout}\n")
+            else:
+                self.enqueue(
+                    "同步完成：Git 身份、忽略规则、换行规则和 443 远程地址已更新。\n"
+                    f"当前 origin：{github_remote(repo_name)}\n"
+                )
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def check_remote(self) -> None:
         repo_name = sanitize_project_name(self.repo_name_var.get())
         remote_url = configured_or_default_remote(self.project_path(), repo_name)
 
         def worker() -> None:
-            self.enqueue("\n正在检测 GitHub 远程连接...\n")
+            self.append_command_start("检测远程连接")
+            self.enqueue("正在检测 GitHub 远程连接...\n")
             result = run_command(["git", "ls-remote", remote_url], self.project_path())
             ok, message = explain_remote_result(result, repo_name)
             self.enqueue(f"{message}\n")
             if ok and not result.stdout.strip():
                 self.enqueue("提示：远程仓库目前没有可列出的提交或分支，空仓库也属于可访问。\n")
+            self.append_command_done()
             self.after(0, self.refresh_git_status)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def git_add_all(self) -> None:
-        self.run_git_async([["git", "add", "-A"]], after=self.refresh_git_status)
+        path = self.project_path()
+
+        def worker() -> None:
+            self.append_command_start("添加全部")
+            result = run_command(["git", "add", "-A"], path)
+            self.enqueue(f"{summarize_simple_git_result('add', result)}\n")
+            detail = (result.stderr or result.stdout).strip()
+            if result.returncode == 0 and detail:
+                self.enqueue("提示：如果仍看到换行符警告，重新添加一次通常会按 .gitattributes 归一化。\n")
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def git_status_detail(self) -> None:
-        self.run_git_async([["git", "status", "--short", "--branch"]])
+        path = self.project_path()
+
+        def worker() -> None:
+            self.append_command_start("状态详情")
+            result = run_command(["git", "status", "--short", "--branch"], path)
+            if result.returncode == 0:
+                self.enqueue(f"{summarize_git_status(result.stdout)}\n")
+            else:
+                self.enqueue(f"状态读取失败：{result.stderr or result.stdout}\n")
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def git_commit(self) -> None:
         message = self.commit_message_var.get().strip() or "Update project"
-        self.run_git_async([["git", "commit", "-m", message]], after=self.refresh_git_status)
+        path = self.project_path()
+
+        def worker() -> None:
+            self.append_command_start("提交")
+            result = run_command(["git", "commit", "-m", message], path)
+            self.enqueue(f"{summarize_simple_git_result('commit', result)}\n")
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def git_fetch(self) -> None:
-        self.run_git_async([["git", "fetch", REMOTE_NAME]], after=self.refresh_git_status)
+        path = self.project_path()
+
+        def worker() -> None:
+            self.append_command_start("获取")
+            result = run_command(["git", "fetch", REMOTE_NAME], path)
+            self.enqueue(f"{summarize_simple_git_result('fetch', result)}\n")
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def git_pull(self) -> None:
         branch = self.branch_var.get().strip() or DEFAULT_BRANCH
-        self.run_git_async(
-            [["git", "pull", REMOTE_NAME, branch]],
-            after=self.refresh_git_status,
-        )
+        path = self.project_path()
+
+        def worker() -> None:
+            self.append_command_start("拉取")
+            result = run_command(["git", "pull", REMOTE_NAME, branch], path, 120)
+            self.enqueue(f"{summarize_simple_git_result('pull', result)}\n")
+            detail = (result.stderr or result.stdout).strip()
+            if result.returncode == 0 and detail:
+                self.enqueue(f"Git 详情：{detail}\n")
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def git_push(self) -> None:
         branch = self.branch_var.get().strip() or DEFAULT_BRANCH
@@ -729,15 +929,17 @@ class ProgramPmApp(tk.Tk):
         repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
 
         def worker() -> None:
+            self.append_command_start("推送")
             try:
                 ensure_gitignore(path)
                 ensure_gitattributes(path)
             except OSError as exc:
                 self.enqueue(f"\n推送已停止：无法更新忽略/换行配置：{exc}\n")
+                self.append_command_done()
                 return
 
             remote_url = configured_or_default_remote(path, repo_name)
-            self.enqueue("\n正在推送前检查 GitHub 远程仓库...\n")
+            self.enqueue("正在推送前检查 GitHub 远程仓库...\n")
             check_result = run_command(["git", "ls-remote", remote_url], path)
             remote_ok, remote_message = explain_remote_result(check_result, repo_name)
             if not remote_ok:
@@ -745,6 +947,7 @@ class ProgramPmApp(tk.Tk):
                     f"{remote_message}\n"
                     "推送已停止：请先创建 GitHub 仓库或修复权限后再推送。\n"
                 )
+                self.append_command_done()
                 self.after(0, self.refresh_git_status)
                 return
 
@@ -764,12 +967,27 @@ class ProgramPmApp(tk.Tk):
                 detail = (push_result.stderr or push_result.stdout).strip()
                 if detail and "repository not found" not in detail.lower():
                     self.enqueue(f"Git 详情：{detail}\n")
+            self.append_command_done()
             self.after(0, self.refresh_git_status)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def git_log(self) -> None:
-        self.run_git_async([["git", "log", "--oneline", "--decorate", "-n", "20"]])
+        path = self.project_path()
+
+        def worker() -> None:
+            self.append_command_start("最近提交")
+            result = run_command(
+                ["git", "log", "--pretty=format:%h%x09%D%x09%s", "-n", "20"],
+                path,
+            )
+            if result.returncode == 0:
+                self.enqueue(f"{summarize_git_log(result.stdout)}\n")
+            else:
+                self.enqueue(f"提交记录读取失败：{result.stderr or result.stdout}\n")
+            self.append_command_done()
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 def parse_args() -> argparse.Namespace:
