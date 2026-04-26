@@ -43,7 +43,7 @@ program-pm
 
 如果 GitHub 侧仓库还不存在，工具会在检测远程时提示先创建仓库。
 
-“初始化 Git”会一次完成：
+新建项目页的“创建后初始化 Git”和项目管理页的“重置 Git 配置”都会完成：
 
 - 生成或更新 `.gitignore`
 - 生成或更新 `.gitattributes`，减少 Windows 下 LF/CRLF 警告
@@ -52,3 +52,5 @@ program-pm
 
 “推送”会先检测远程仓库。如果 GitHub 侧仓库不存在或 SSH key 无权限，
 工具会停止推送并给出明确提示。
+
+如果项目尚未初始化 Git，“重置 Git 配置”会提示当前没有 Git 配置，并执行初始化流程。

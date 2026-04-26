@@ -434,12 +434,6 @@ class ProgramPmApp(tk.Tk):
         ).pack(side=tk.LEFT)
         self.make_button(
             actions,
-            "初始化当前项目 Git",
-            self.git_init,
-            "对项目路径中的当前目录执行 Git 初始化，并补齐 .gitignore、.gitattributes、身份和 443 远程。",
-        ).pack(side=tk.LEFT, padx=8)
-        self.make_button(
-            actions,
             "创建项目",
             self.create_project,
             "在创建位置下新建项目目录，创建 AgentFiles 链接，并可同步初始化 Git。",
@@ -518,9 +512,9 @@ class ProgramPmApp(tk.Tk):
                 "检查当前 origin 或仓库名对应的 GitHub SSH 443 远程是否可访问。",
             ),
             (
-                "同步 Git 配置",
-                self.sync_git_config,
-                "按当前仓库名重新设置 Git 用户身份、.gitignore、.gitattributes 和 443 远程地址。",
+                "重置 Git 配置",
+                self.reset_git_config,
+                "按当前仓库名重置 Git 用户身份、.gitignore、.gitattributes 和 443 远程；未初始化时会先初始化。",
             ),
             (
                 "获取",
@@ -712,7 +706,7 @@ class ProgramPmApp(tk.Tk):
             return f"路径不存在：{path}"
         inside = run_command(["git", "rev-parse", "--is-inside-work-tree"], path)
         if inside.returncode != 0:
-            return "当前路径尚未初始化 Git。请先在“新建项目”页初始化当前项目 Git。"
+            return "当前路径尚未初始化 Git。可点击“重置 Git 配置”执行初始化。"
         branch = run_command(["git", "branch", "--show-current"], path)
         remote = run_command(["git", "remote", "get-url", REMOTE_NAME], path)
         status = run_command(["git", "status", "--short"], path)
@@ -753,34 +747,6 @@ class ProgramPmApp(tk.Tk):
         self.enqueue(f"{status_text}\n")
         self.append_command_done()
 
-    def git_init(self) -> None:
-        branch = self.branch_var.get().strip() or DEFAULT_BRANCH
-        path = self.project_path()
-        repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
-
-        def worker() -> None:
-            self.append_command_start("初始化当前项目 Git")
-            self.enqueue("正在生成 .gitignore、.gitattributes，并设置身份和 443 远程...\n")
-            try:
-                results = initialize_git_repository(path, repo_name, branch)
-            except OSError as exc:
-                self.enqueue(f"Git 初始化失败：{exc}\n")
-                self.append_command_done()
-                return
-            failed = next((result for result in results if result.returncode != 0), None)
-            if failed:
-                self.enqueue(f"Git 初始化失败：{failed.stderr or failed.stdout}\n")
-            else:
-                self.enqueue(
-                    "Git 初始化完成：已生成 .gitignore，"
-                    f"身份为 {GITHUB_USER} <{GITHUB_EMAIL}>，"
-                    f"远程为 {github_remote(repo_name)}。\n"
-                )
-            self.append_command_done()
-            self.after(0, self.refresh_git_status)
-
-        threading.Thread(target=worker, daemon=True).start()
-
     def create_gitignore(self) -> None:
         try:
             ensure_gitignore(self.project_path())
@@ -809,25 +775,31 @@ class ProgramPmApp(tk.Tk):
             self.append_output(f"\n设置 443 远程失败：{result.stderr or result.stdout}\n")
         self.refresh_git_status()
 
-    def sync_git_config(self) -> None:
+    def reset_git_config(self) -> None:
         branch = self.branch_var.get().strip() or DEFAULT_BRANCH
         path = self.project_path()
         repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
 
         def worker() -> None:
-            self.append_command_start("同步 Git 配置")
+            self.append_command_start("重置 Git 配置")
+            inside = run_command(["git", "rev-parse", "--is-inside-work-tree"], path)
+            if inside.returncode != 0:
+                self.enqueue("当前项目尚未初始化 Git；现在将执行初始化流程。\n")
+            else:
+                self.enqueue("当前项目已有 Git 配置；现在将按界面参数重置配置。\n")
+            self.enqueue("将更新 .gitignore、.gitattributes、Git 身份和 GitHub 443 远程地址。\n")
             try:
                 results = initialize_git_repository(path, repo_name, branch)
             except OSError as exc:
-                self.enqueue(f"同步失败：{exc}\n")
+                self.enqueue(f"重置失败：{exc}\n")
                 self.append_command_done()
                 return
             failed = next((result for result in results if result.returncode != 0), None)
             if failed:
-                self.enqueue(f"同步失败：{failed.stderr or failed.stdout}\n")
+                self.enqueue(f"重置失败：{failed.stderr or failed.stdout}\n")
             else:
                 self.enqueue(
-                    "同步完成：Git 身份、忽略规则、换行规则和 443 远程地址已更新。\n"
+                    "重置完成：Git 身份、忽略规则、换行规则和 443 远程地址已更新。\n"
                     f"当前 origin：{github_remote(repo_name)}\n"
                 )
             self.append_command_done()
