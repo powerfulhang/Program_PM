@@ -13,13 +13,15 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Callable
+from urllib.parse import urlparse
 
 
 AGENTFILES_DIR = Path(r"F:\Working Files\Coding\AgentFiles")
 GITHUB_USER = "powerfulhang"
 GITHUB_EMAIL = "hangshi1023@gmail.com"
-DEFAULT_BRANCH = "master"
+DEFAULT_BRANCH = "main"
 REMOTE_NAME = "origin"
+AUTO_GENERATED_CONFIG_FILES = [".gitignore", ".gitattributes"]
 
 
 @dataclass
@@ -73,15 +75,22 @@ def list_agent_files() -> list[Path]:
     return sorted(path for path in AGENTFILES_DIR.iterdir() if path.is_file())
 
 
-def create_link(source: Path, destination: Path) -> None:
-    """Create a symlink so AgentFiles updates are reflected in projects.
+def create_link(source: Path, destination: Path) -> str:
+    """Create a symlink or hard link for an AgentFiles entry.
 
     Ref: Python Standard Library, pathlib.Path.symlink_to:
     https://docs.python.org/3/library/pathlib.html#pathlib.Path.symlink_to
+    Ref: Python Standard Library, os.link:
+    https://docs.python.org/3/library/os.html#os.link
     """
     if destination.exists() or destination.is_symlink():
         destination.unlink()
-    destination.symlink_to(source)
+    try:
+        destination.symlink_to(source)
+        return "符号链接"
+    except OSError:
+        os.link(source, destination)
+        return "硬链接"
 
 
 def ensure_gitignore(project_path: Path) -> None:
@@ -158,6 +167,34 @@ def ensure_gitattributes(project_path: Path) -> None:
 
 def github_remote(repo_name: str) -> str:
     return f"ssh://git@ssh.github.com:443/{GITHUB_USER}/{repo_name}.git"
+
+
+def repository_name_from_remote_url(remote_url: str) -> str | None:
+    """Extract a GitHub repository name from common remote URL forms.
+
+    Ref: Python Standard Library, urllib.parse.urlparse:
+    https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlparse
+    """
+    url = remote_url.strip()
+    if not url:
+        return None
+
+    path = ""
+    if "://" in url:
+        parsed = urlparse(url)
+        path = parsed.path
+    elif ":" in url and "@" in url.split(":", 1)[0]:
+        path = url.split(":", 1)[1]
+    else:
+        path = url
+
+    parts = [part for part in path.replace("\\", "/").split("/") if part]
+    if len(parts) < 2:
+        return None
+    repo_name = parts[-1]
+    if repo_name.endswith(".git"):
+        repo_name = repo_name[:-4]
+    return sanitize_project_name(repo_name) or None
 
 
 def configured_or_default_remote(project_path: Path, repo_name: str) -> str:
@@ -260,6 +297,106 @@ def summarize_simple_git_result(action: str, result: CommandResult) -> str:
         if action == "pull":
             return "拉取完成：远程更新已合并到当前分支。"
     return f"操作失败：{detail or 'Git 返回了非零状态。'}"
+
+
+def current_git_branch(project_path: Path) -> tuple[str | None, str | None]:
+    """Return the current branch name for push/pull.
+
+    Ref: Git branch manual, --show-current:
+    https://git-scm.com/docs/git-branch
+    Ref: Git rev-parse manual, --abbrev-ref:
+    https://git-scm.com/docs/git-rev-parse
+    """
+    branch_result = run_command(["git", "branch", "--show-current"], project_path)
+    if branch_result.returncode == 0 and branch_result.stdout.strip():
+        return branch_result.stdout.strip(), None
+
+    result = run_command(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        project_path,
+    )
+    if result.returncode != 0:
+        return None, (result.stderr or result.stdout).strip()
+    branch = result.stdout.strip()
+    if not branch or branch == "HEAD":
+        return None, "当前仓库处于 detached HEAD 状态，无法确定要推送的分支。"
+    return branch, None
+
+
+def has_local_commits(project_path: Path) -> bool:
+    """Return whether HEAD points to an existing commit."""
+    result = run_command(["git", "rev-parse", "--verify", "HEAD"], project_path)
+    return result.returncode == 0
+
+
+def remote_default_branch(project_path: Path) -> str | None:
+    """Return origin's default branch after fetch/ls-remote when possible."""
+    symbolic = run_command(
+        ["git", "symbolic-ref", "--short", f"refs/remotes/{REMOTE_NAME}/HEAD"],
+        project_path,
+    )
+    if symbolic.returncode == 0 and symbolic.stdout.strip():
+        name = symbolic.stdout.strip()
+        prefix = f"{REMOTE_NAME}/"
+        return name[len(prefix) :] if name.startswith(prefix) else name
+
+    remote_head = run_command(
+        ["git", "ls-remote", "--symref", REMOTE_NAME, "HEAD"],
+        project_path,
+    )
+    for line in remote_head.stdout.splitlines():
+        if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
+            return line.split("refs/heads/", 1)[1].split("\t", 1)[0]
+    return None
+
+
+def untracked_file_exists(project_path: Path, relative_path: str) -> bool:
+    result = run_command(["git", "status", "--porcelain", "--", relative_path], project_path)
+    return result.returncode == 0 and result.stdout.startswith("?? ")
+
+
+def remote_file_exists(project_path: Path, branch: str, relative_path: str) -> bool:
+    result = run_command(
+        ["git", "cat-file", "-e", f"{REMOTE_NAME}/{branch}:{relative_path}"],
+        project_path,
+    )
+    return result.returncode == 0
+
+
+def backup_first_pull_conflicts(project_path: Path, branch: str) -> list[Path]:
+    """Move auto-generated config files away before a first pull.
+
+    Ref: Python Standard Library, pathlib.Path.replace:
+    https://docs.python.org/3/library/pathlib.html#pathlib.Path.replace
+    """
+    conflicts = [
+        relative_path
+        for relative_path in AUTO_GENERATED_CONFIG_FILES
+        if (project_path / relative_path).exists()
+        and untracked_file_exists(project_path, relative_path)
+        and remote_file_exists(project_path, branch, relative_path)
+    ]
+    if not conflicts:
+        return []
+
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_root = project_path / ".git" / "program-pm-backups"
+    backup_dir = backup_root / f"first-pull-{stamp}"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backups: list[Path] = []
+    for relative_path in conflicts:
+        source = project_path / relative_path
+        target = backup_dir / relative_path
+        source.replace(target)
+        backups.append(target)
+    return backups
+
+
+def restore_backups(project_path: Path, backups: list[Path]) -> None:
+    for backup in backups:
+        target = project_path / backup.name
+        if not target.exists():
+            backup.replace(target)
 
 
 def configure_git_remote(project_path: Path, remote_url: str) -> CommandResult:
@@ -485,7 +622,7 @@ class ProgramPmApp(tk.Tk):
         )
         repo_entry.bind("<FocusOut>", lambda _event: self.refresh_git_status())
         repo_entry.bind("<Return>", lambda _event: self.refresh_git_status())
-        ttk.Label(info, text="默认分支").grid(row=0, column=2, sticky=tk.W, padx=(18, 0))
+        ttk.Label(info, text="初始化分支").grid(row=0, column=2, sticky=tk.W, padx=(18, 0))
         branch_entry = ttk.Entry(info, textvariable=self.branch_var, width=16)
         branch_entry.grid(
             row=0, column=3, sticky=tk.W, padx=8
@@ -504,7 +641,7 @@ class ProgramPmApp(tk.Tk):
             (
                 "刷新本地 Git 状态",
                 self.refresh_git_status_with_output,
-                "刷新当前项目是否为 Git 仓库、当前分支、origin 地址和工作区是否有未提交更改。",
+                "优先从 origin 读取真实 GitHub 仓库名，读不到时用当前项目文件夹名，再刷新状态。",
             ),
             (
                 "检测远程连接",
@@ -524,7 +661,7 @@ class ProgramPmApp(tk.Tk):
             (
                 "拉取",
                 self.git_pull,
-                "从 origin 的默认分支拉取并合并到当前分支。",
+                "动态读取当前分支，并从 origin 的同名分支拉取更新。",
             ),
             (
                 "状态详情",
@@ -544,7 +681,7 @@ class ProgramPmApp(tk.Tk):
             (
                 "推送",
                 self.git_push,
-                "先确认远程仓库可访问，再把当前分支推送到 origin。",
+                "动态读取当前分支，先确认远程仓库可访问，再推送到 origin。",
             ),
             (
                 "最近提交",
@@ -600,33 +737,42 @@ class ProgramPmApp(tk.Tk):
         selected = filedialog.askdirectory(initialdir=self.project_path_var.get())
         if selected:
             self.project_path_var.set(selected)
-            self.repo_name_var.set(Path(selected).name)
+            self.sync_repo_name_from_git_context()
             self.refresh_git_status()
 
     def create_project(self) -> None:
-        base = Path(self.create_base_var.get()).expanduser()
+        base = Path(self.create_base_var.get().strip()).expanduser()
         project_name = sanitize_project_name(self.project_name_var.get())
-        project_path = base / project_name
+        base_name = sanitize_project_name(base.name)
+        use_base_as_project = base_name == project_name
+        project_path = base if use_base_as_project else base / project_name
         selected = [path for path, var in self.agent_vars.items() if var.get()]
         if not selected:
             selected = list(self.agent_vars.keys())
 
+        link_types: set[str] = set()
         try:
-            project_path.mkdir(parents=False, exist_ok=False)
+            if project_path.exists():
+                if not use_base_as_project or not project_path.is_dir():
+                    messagebox.showerror("创建失败", f"目录已存在：{project_path}")
+                    return
+            else:
+                project_path.mkdir(parents=False, exist_ok=False)
             for source in selected:
-                create_link(source, project_path / source.name)
+                link_types.add(create_link(source, project_path / source.name))
         except FileExistsError:
             messagebox.showerror("创建失败", f"目录已存在：{project_path}")
             return
         except OSError as exc:
             messagebox.showerror(
                 "链接创建失败",
-                "Windows 可能未允许当前用户创建符号链接。\n"
-                "可开启 Developer Mode，或用管理员权限运行终端后重试。\n\n"
+                "已尝试符号链接和硬链接，但都未能创建。\n"
+                "请确认 AgentFiles 和项目目录在同一磁盘，且目标文件没有被占用。\n\n"
                 f"{exc}",
             )
             return
 
+        link_summary = "、".join(sorted(link_types)) if link_types else "未创建链接"
         self.project_path_var.set(str(project_path))
         self.repo_name_var.set(project_path.name)
         if self.init_git_on_create_var.get():
@@ -645,14 +791,45 @@ class ProgramPmApp(tk.Tk):
             else:
                 messagebox.showinfo(
                     "完成",
-                    f"已创建项目并初始化 Git：{project_path}",
+                    f"已创建项目并初始化 Git：{project_path}\n"
+                    f"AgentFiles 链接类型：{link_summary}",
                 )
         else:
-            messagebox.showinfo("完成", f"已创建项目：{project_path}")
+            messagebox.showinfo(
+                "完成",
+                f"已创建项目：{project_path}\n"
+                f"AgentFiles 链接类型：{link_summary}",
+            )
         self.refresh_git_status()
 
     def project_path(self) -> Path:
         return Path(self.project_path_var.get()).expanduser()
+
+    def sync_repo_name_from_git_context(self) -> tuple[str | None, str]:
+        """Set the repository name from origin, falling back to the folder name.
+
+        Ref: Python Standard Library, pathlib.PurePath.name:
+        https://docs.python.org/3/library/pathlib.html#pathlib.PurePath.name
+        """
+        project_path = self.project_path()
+        remote = run_command(["git", "remote", "get-url", REMOTE_NAME], project_path)
+        remote_name = (
+            repository_name_from_remote_url(remote.stdout)
+            if remote.returncode == 0
+            else None
+        )
+        source = "origin"
+        project_name = remote_name
+        if not project_name:
+            project_name = sanitize_project_name(project_path.name)
+            source = "项目文件夹名"
+        if not project_name:
+            return None, source
+        old_name = self.repo_name_var.get().strip()
+        if old_name != project_name:
+            self.repo_name_var.set(project_name)
+            return project_name, source
+        return None, source
 
     def append_output(self, text: str) -> None:
         self.output.insert(tk.END, text)
@@ -723,7 +900,7 @@ class ProgramPmApp(tk.Tk):
         )
         remote_note = ""
         if remote.returncode == 0 and remote_text != expected_remote:
-            remote_note = " | 注意：origin 与上方仓库名推导的地址不一致"
+            remote_note = " | 注意：origin 与仓库名推导地址不一致，可点“重置 Git 配置”更新"
         branch_note = ""
         branch_line = next(
             (line for line in ahead_behind.stdout.splitlines() if line.startswith("## ")),
@@ -742,6 +919,12 @@ class ProgramPmApp(tk.Tk):
 
     def refresh_git_status_with_output(self) -> None:
         self.append_command_start("刷新本地 Git 状态")
+        synced_name, source = self.sync_repo_name_from_git_context()
+        if synced_name:
+            self.enqueue(
+                f"已按{source}更新仓库名：{synced_name}。\n"
+                "后续远程检测、重置 Git 配置和推送都会使用这个仓库名。\n"
+            )
         status_text = self.collect_git_status_text()
         self.status_var.set(status_text)
         self.enqueue(f"{status_text}\n")
@@ -880,28 +1063,100 @@ class ProgramPmApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def git_pull(self) -> None:
-        branch = self.branch_var.get().strip() or DEFAULT_BRANCH
         path = self.project_path()
 
         def worker() -> None:
             self.append_command_start("拉取")
+            branch, branch_error = current_git_branch(path)
+            if not branch:
+                self.enqueue(f"拉取已停止：{branch_error or '无法读取当前分支。'}\n")
+                self.append_command_done()
+                self.after(0, self.refresh_git_status)
+                return
+
+            local_branch = branch
+            first_pull = not has_local_commits(path)
+            if first_pull:
+                self.enqueue("当前仓库还没有本地提交，将按首次拉取流程处理。\n")
+                fetch_result = run_command(["git", "fetch", REMOTE_NAME], path, 120)
+                if fetch_result.returncode != 0:
+                    self.enqueue(f"首次拉取失败：无法获取远端信息。{fetch_result.stderr or fetch_result.stdout}\n")
+                    self.append_command_done()
+                    self.after(0, self.refresh_git_status)
+                    return
+                remote_branch = remote_default_branch(path)
+                if remote_branch:
+                    branch = remote_branch
+                    self.enqueue(f"已识别远端默认分支为 {branch}。\n")
+                    if local_branch != branch:
+                        rename_result = run_command(["git", "branch", "-M", branch], path)
+                        if rename_result.returncode == 0:
+                            self.enqueue(f"已将本地初始化分支从 {local_branch} 改为 {branch}。\n")
+                        else:
+                            self.enqueue(f"首次拉取失败：无法重命名本地分支。{rename_result.stderr or rename_result.stdout}\n")
+                            self.append_command_done()
+                            self.after(0, self.refresh_git_status)
+                            return
+                else:
+                    self.enqueue(f"未能识别远端默认分支，将尝试拉取当前初始化分支 {branch}。\n")
+
+            backups: list[Path] = []
+            if first_pull:
+                try:
+                    backups = backup_first_pull_conflicts(path, branch)
+                except OSError as exc:
+                    self.enqueue(f"首次拉取失败：无法备份本地初始化配置文件。{exc}\n")
+                    self.append_command_done()
+                    self.after(0, self.refresh_git_status)
+                    return
+                if backups:
+                    backup_folder = backups[0].parent
+                    names = "、".join(backup.name for backup in backups)
+                    self.enqueue(
+                        f"检测到远端已有 {names}，已先备份本地自动生成版本到：{backup_folder}\n"
+                    )
+
+            self.enqueue(f"当前将从 origin/{branch} 拉取更新。\n")
             result = run_command(["git", "pull", REMOTE_NAME, branch], path, 120)
             self.enqueue(f"{summarize_simple_git_result('pull', result)}\n")
             detail = (result.stderr or result.stdout).strip()
+            if result.returncode == 0 and first_pull:
+                checkout_result = run_command(["git", "branch", "--set-upstream-to", f"{REMOTE_NAME}/{branch}"], path)
+                if checkout_result.returncode == 0:
+                    self.enqueue(f"已把当前分支设置为跟踪 origin/{branch}。\n")
+                if backups:
+                    self.enqueue("远端版本已拉取完成，本地自动生成配置已保留为备份。\n")
             if result.returncode == 0 and detail:
                 self.enqueue(f"Git 详情：{detail}\n")
+            elif result.returncode != 0:
+                if backups:
+                    try:
+                        restore_backups(path, backups)
+                        self.enqueue("拉取失败，已恢复刚才备份的本地初始化配置文件。\n")
+                    except OSError as exc:
+                        self.enqueue(f"拉取失败，且恢复备份时出错：{exc}\n")
+                if "untracked working tree files would be overwritten" in detail.lower():
+                    self.enqueue(
+                        "提示：远端文件会覆盖当前目录中的未跟踪文件。"
+                        "如果这是刚创建的空项目，可先删除或移走冲突文件后再拉取。\n"
+                    )
             self.append_command_done()
             self.after(0, self.refresh_git_status)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def git_push(self) -> None:
-        branch = self.branch_var.get().strip() or DEFAULT_BRANCH
         path = self.project_path()
         repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
 
         def worker() -> None:
             self.append_command_start("推送")
+            branch, branch_error = current_git_branch(path)
+            if not branch:
+                self.enqueue(f"推送已停止：{branch_error or '无法读取当前分支。'}\n")
+                self.append_command_done()
+                self.after(0, self.refresh_git_status)
+                return
             try:
                 ensure_gitignore(path)
                 ensure_gitattributes(path)
@@ -923,7 +1178,7 @@ class ProgramPmApp(tk.Tk):
                 self.after(0, self.refresh_git_status)
                 return
 
-            self.enqueue("远程仓库可访问，开始推送当前分支...\n")
+            self.enqueue(f"远程仓库可访问，开始推送当前分支 {branch}...\n")
             push_result = run_command(["git", "push", "-u", REMOTE_NAME, branch], path, 120)
             if push_result.returncode == 0:
                 self.enqueue("推送成功：本地提交已上传到 GitHub。\n")

@@ -8,12 +8,16 @@ New-Item -ItemType Directory -Force -Path $userBin | Out-Null
 
 $content = @"
 @echo off
-"$projectRoot\program-pm.cmd" %*
+call "$projectRoot\program-pm.cmd" %*
+exit /b %ERRORLEVEL%
 "@
 Set-Content -Path $launcher -Value $content -Encoding ASCII
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if (($userPath -split ";") -notcontains $userBin) {
+if ([string]::IsNullOrWhiteSpace($userPath)) {
+    [Environment]::SetEnvironmentVariable("Path", $userBin, "User")
+    Write-Host "Added $userBin to the user PATH. Open a new terminal before running program-pm."
+} elseif (($userPath -split ";") -notcontains $userBin) {
     [Environment]::SetEnvironmentVariable("Path", "$userPath;$userBin", "User")
     Write-Host "Added $userBin to the user PATH. Open a new terminal before running program-pm."
 } else {
@@ -21,3 +25,4 @@ if (($userPath -split ";") -notcontains $userBin) {
 }
 
 Write-Host "Installed launcher: $launcher"
+Write-Host "For this PowerShell session only, run: `$env:Path = `"$userBin;`$env:Path`""
