@@ -75,94 +75,71 @@ def list_module_files() -> list[Path]:
     return sorted(path for path in MODULEFILES_DIR.iterdir() if path.is_file())
 
 
-def create_link(source: Path, destination: Path) -> str:
-    """Create a symlink or hard link for a ModuleFiles entry.
+def copy_module_file(source: Path, destination: Path) -> None:
+    """Copy a ModuleFiles template file to the project directory.
 
-    Ref: Python Standard Library, pathlib.Path.symlink_to:
-    https://docs.python.org/3/library/pathlib.html#pathlib.Path.symlink_to
-    Ref: Python Standard Library, os.link:
-    https://docs.python.org/3/library/os.html#os.link
+    Ref: Python Standard Library, pathlib.Path.read_bytes/write_bytes:
+    https://docs.python.org/3/library/pathlib.html#pathlib.Path.read_bytes
     """
-    if destination.exists() or destination.is_symlink():
-        destination.unlink()
-    try:
-        destination.symlink_to(source)
-        return "符号链接"
-    except OSError:
-        os.link(source, destination)
-        return "硬链接"
+    destination.write_bytes(source.read_bytes())
+
+
+def _ensure_config_file(file_path: Path, lines: list[str]) -> None:
+    """Create or extend a config file with the given lines."""
+    existing = file_path.read_text(encoding="utf-8") if file_path.exists() else ""
+    missing = [line for line in lines if line and line not in existing]
+    if not file_path.exists():
+        file_path.write_text("\n".join(lines), encoding="utf-8")
+        return
+    if missing:
+        suffix = "" if existing.endswith("\n") else "\n"
+        file_path.write_text(existing + suffix + "\n".join(missing) + "\n", encoding="utf-8")
 
 
 def ensure_gitignore(project_path: Path) -> None:
-    """Create or extend .gitignore with defaults.
-
-    Ref: Python Standard Library, pathlib.Path.read_text/write_text:
-    https://docs.python.org/3/library/pathlib.html#pathlib.Path.read_text
-    """
-    gitignore = project_path / ".gitignore"
-    required = [
-        "# ModuleFiles links and local automation",
-        "AGENTS*.md",
-        "",
-        "# Python temporary files",
-        "__pycache__/",
-        "*.py[cod]",
-        ".pytest_cache/",
-        ".mypy_cache/",
-        ".ruff_cache/",
-        "",
-        "# Virtual environments",
-        ".venv/",
-        "venv/",
-        "*-venv/",
-        "",
-        "# Editor and OS files",
-        ".idea/",
-        ".vscode/",
-        ".DS_Store",
-        "Thumbs.db",
-        "",
-    ]
-    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    lines_to_add = [line for line in required if line and line not in existing]
-    if not gitignore.exists():
-        gitignore.write_text("\n".join(required), encoding="utf-8")
-        return
-    if lines_to_add:
-        suffix = "" if existing.endswith("\n") else "\n"
-        gitignore.write_text(
-            existing + suffix + "\n".join(required) + "\n",
-            encoding="utf-8",
-        )
+    """Create or extend .gitignore with defaults."""
+    _ensure_config_file(
+        project_path / ".gitignore",
+        [
+            "# ModuleFiles links and local automation",
+            "AGENTS*.md",
+            "",
+            "# Python temporary files",
+            "__pycache__/",
+            "*.py[cod]",
+            ".pytest_cache/",
+            ".mypy_cache/",
+            ".ruff_cache/",
+            "",
+            "# Virtual environments",
+            ".venv/",
+            "venv/",
+            "*-venv/",
+            "",
+            "# Editor and OS files",
+            ".idea/",
+            ".vscode/",
+            ".DS_Store",
+            "Thumbs.db",
+            "",
+        ],
+    )
 
 
 def ensure_gitattributes(project_path: Path) -> None:
-    """Create .gitattributes to keep line endings predictable on Windows.
-
-    Ref: Git gitattributes documentation:
-    https://git-scm.com/docs/gitattributes
-    """
-    attributes = project_path / ".gitattributes"
-    required = [
-        "* text=auto",
-        "*.py text eol=lf",
-        "*.toml text eol=lf",
-        "*.md text eol=lf",
-        "*.ps1 text eol=crlf",
-        "*.cmd text eol=crlf",
-        "",
-    ]
-    existing = attributes.read_text(encoding="utf-8") if attributes.exists() else ""
-    if not attributes.exists():
-        attributes.write_text("\n".join(required), encoding="utf-8")
-        return
-    missing = [line for line in required if line and line not in existing]
-    if missing:
-        suffix = "" if existing.endswith("\n") else "\n"
-        attributes.write_text(
-            existing + suffix + "\n".join(missing) + "\n",
-            encoding="utf-8",
-        )
+    """Create .gitattributes to keep line endings predictable on Windows."""
+    _ensure_config_file(
+        project_path / ".gitattributes",
+        [
+            "* text=auto",
+            "*.py text eol=lf",
+            "*.toml text eol=lf",
+            "*.md text eol=lf",
+            "*.ps1 text eol=crlf",
+            "*.cmd text eol=crlf",
+            "",
+        ],
+    )
 
 
 def github_remote(repo_name: str) -> str:
@@ -567,13 +544,13 @@ class ProgramPmApp(tk.Tk):
             actions,
             "刷新 ModuleFiles",
             self._load_module_files,
-            f"重新扫描 {MODULEFILES_DIR} 下的可链接文件。",
+            f"重新扫描 {MODULEFILES_DIR} 下的模板文件。",
         ).pack(side=tk.LEFT)
         self.make_button(
             actions,
             "创建项目",
             self.create_project,
-            "在创建位置下新建项目目录，创建 ModuleFiles 链接，并可同步初始化 Git。",
+            "在创建位置下新建项目目录，拷贝选中的 ModuleFiles 模板文件，并可同步初始化 Git。",
         ).pack(side=tk.RIGHT)
 
         list_frame = ttk.LabelFrame(self.new_project_tab, text="ModuleFiles")
@@ -748,7 +725,7 @@ class ProgramPmApp(tk.Tk):
         project_path = base if use_base_as_project else base / project_name
         selected = [path for path, var in self.module_vars.items() if var.get()]
 
-        link_types: set[str] = set()
+        dir_created = False
         try:
             if project_path.exists():
                 if not use_base_as_project or not project_path.is_dir():
@@ -756,21 +733,27 @@ class ProgramPmApp(tk.Tk):
                     return
             else:
                 project_path.mkdir(parents=False, exist_ok=False)
+                dir_created = True
             for source in selected:
-                link_types.add(create_link(source, project_path / source.name))
+                copy_module_file(source, project_path / source.name)
         except FileExistsError:
             messagebox.showerror("创建失败", f"目录已存在：{project_path}")
             return
         except OSError as exc:
+            if dir_created:
+                try:
+                    for child in project_path.iterdir():
+                        child.unlink()
+                    project_path.rmdir()
+                except OSError:
+                    pass
             messagebox.showerror(
-                "链接创建失败",
-                "已尝试符号链接和硬链接，但都未能创建。\n"
-                "请确认 ModuleFiles 和项目目录在同一磁盘，且目标文件没有被占用。\n\n"
-                f"{exc}",
+                "拷贝失败",
+                f"无法将模板文件拷贝到项目目录。\n\n{exc}",
             )
             return
 
-        link_summary = "、".join(sorted(link_types)) if link_types else "未创建链接"
+        file_summary = f"已拷贝 {len(selected)} 个文件" if selected else "未拷贝文件"
         self.project_path_var.set(str(project_path))
         self.repo_name_var.set(project_path.name)
         if self.init_git_on_create_var.get():
@@ -790,13 +773,13 @@ class ProgramPmApp(tk.Tk):
                 messagebox.showinfo(
                     "完成",
                     f"已创建项目并初始化 Git：{project_path}\n"
-                    f"ModuleFiles 链接类型：{link_summary}",
+                    f"{file_summary}",
                 )
         else:
             messagebox.showinfo(
                 "完成",
                 f"已创建项目：{project_path}\n"
-                f"ModuleFiles 链接类型：{link_summary}",
+                f"{file_summary}",
             )
         self.refresh_git_status()
 
@@ -884,13 +867,13 @@ class ProgramPmApp(tk.Tk):
             return "当前路径尚未初始化 Git。可点击“重置 Git 配置”执行初始化。"
         branch = run_command(["git", "branch", "--show-current"], path)
         remote = run_command(["git", "remote", "get-url", REMOTE_NAME], path)
-        status = run_command(["git", "status", "--short"], path)
-        ahead_behind = run_command(["git", "status", "--short", "--branch"], path)
+        status = run_command(["git", "status", "--short", "--branch"], path)
         remote_text = remote.stdout.strip() if remote.returncode == 0 else "未设置"
         branch_text = branch.stdout.strip() or "(detached)"
+        status_lines = [line for line in status.stdout.splitlines() if line.strip() and not line.startswith("## ")]
         dirty_text = (
-            f"有 {len(status.stdout.splitlines())} 项未提交文件改动"
-            if status.stdout.strip()
+            f"有 {len(status_lines)} 项未提交文件改动"
+            if status_lines
             else "没有未提交的文件改动"
         )
         expected_remote = github_remote(
@@ -901,7 +884,7 @@ class ProgramPmApp(tk.Tk):
             remote_note = " | 注意：origin 与仓库名推导地址不一致，可点“重置 Git 配置”更新"
         branch_note = ""
         branch_line = next(
-            (line for line in ahead_behind.stdout.splitlines() if line.startswith("## ")),
+            (line for line in status.stdout.splitlines() if line.startswith("## ")),
             "",
         )
         if "ahead" in branch_line or "behind" in branch_line:
@@ -927,34 +910,6 @@ class ProgramPmApp(tk.Tk):
         self.status_var.set(status_text)
         self.enqueue(f"{status_text}\n")
         self.append_command_done()
-
-    def create_gitignore(self) -> None:
-        try:
-            ensure_gitignore(self.project_path())
-        except OSError as exc:
-            messagebox.showerror("失败", str(exc))
-            return
-        self.append_output("\n已生成或更新 .gitignore\n")
-        self.refresh_git_status()
-
-    def configure_identity(self) -> None:
-        self.run_git_async(
-            [
-                ["git", "config", "user.name", GITHUB_USER],
-                ["git", "config", "user.email", GITHUB_EMAIL],
-            ],
-            after=self.refresh_git_status,
-        )
-
-    def configure_remote(self) -> None:
-        repo_name = sanitize_project_name(self.repo_name_var.get())
-        remote_url = github_remote(repo_name)
-        result = configure_git_remote(self.project_path(), remote_url)
-        if result.returncode == 0:
-            self.append_output(f"\n已设置 443 远程：{remote_url}\n")
-        else:
-            self.append_output(f"\n设置 443 远程失败：{result.stderr or result.stdout}\n")
-        self.refresh_git_status()
 
     def reset_git_config(self) -> None:
         branch = self.branch_var.get().strip() or DEFAULT_BRANCH
