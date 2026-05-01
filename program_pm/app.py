@@ -16,7 +16,7 @@ from typing import Callable
 from urllib.parse import urlparse
 
 
-AGENTFILES_DIR = Path(r"F:\Working Files\Coding\AgentFiles")
+MODULEFILES_DIR = Path(r"F:\Working Files\Coding\ModuleFiles")
 GITHUB_USER = "powerfulhang"
 GITHUB_EMAIL = "hangshi1023@gmail.com"
 DEFAULT_BRANCH = "main"
@@ -64,19 +64,19 @@ def sanitize_project_name(name: str) -> str:
     return f"Project-{stamp}"
 
 
-def list_agent_files() -> list[Path]:
-    """List direct files in the AgentFiles directory.
+def list_module_files() -> list[Path]:
+    """List direct files in the ModuleFiles directory.
 
     Ref: Python Standard Library, pathlib.Path.iterdir:
     https://docs.python.org/3/library/pathlib.html#pathlib.Path.iterdir
     """
-    if not AGENTFILES_DIR.exists():
+    if not MODULEFILES_DIR.exists():
         return []
-    return sorted(path for path in AGENTFILES_DIR.iterdir() if path.is_file())
+    return sorted(path for path in MODULEFILES_DIR.iterdir() if path.is_file())
 
 
 def create_link(source: Path, destination: Path) -> str:
-    """Create a symlink or hard link for an AgentFiles entry.
+    """Create a symlink or hard link for a ModuleFiles entry.
 
     Ref: Python Standard Library, pathlib.Path.symlink_to:
     https://docs.python.org/3/library/pathlib.html#pathlib.Path.symlink_to
@@ -101,7 +101,7 @@ def ensure_gitignore(project_path: Path) -> None:
     """
     gitignore = project_path / ".gitignore"
     required = [
-        "# AgentFiles links and local automation",
+        "# ModuleFiles links and local automation",
         "AGENTS*.md",
         "",
         "# Python temporary files",
@@ -487,10 +487,10 @@ class ProgramPmApp(tk.Tk):
         self.minsize(880, 560)
         self.start_dir = start_dir
         self.output_queue: queue.Queue[str] = queue.Queue()
-        self.agent_vars: dict[Path, tk.BooleanVar] = {}
+        self.module_vars: dict[Path, tk.BooleanVar] = {}
 
         self._build_ui()
-        self._load_agent_files()
+        self._load_module_files()
         self._poll_output()
         self.refresh_git_status()
 
@@ -554,44 +554,44 @@ class ProgramPmApp(tk.Tk):
         self.make_button(
             actions,
             "全选",
-            self.select_all_agents,
-            "勾选所有 AgentFiles。未勾选任何文件时，创建项目也会默认链接全部文件。",
+            self.select_all_modules,
+            "勾选所有 ModuleFiles。未勾选任何文件时，创建项目时不会拷贝任何文件。",
         ).pack(side=tk.LEFT)
         self.make_button(
             actions,
             "全不选",
-            self.clear_agents,
-            "清空当前勾选。保持全不选并创建项目时，会按默认规则链接全部文件。",
+            self.clear_modules,
+            "清空当前勾选。",
         ).pack(side=tk.LEFT, padx=8)
         self.make_button(
             actions,
-            "刷新 AgentFiles",
-            self._load_agent_files,
-            f"重新扫描 {AGENTFILES_DIR} 下的可链接文件。",
+            "刷新 ModuleFiles",
+            self._load_module_files,
+            f"重新扫描 {MODULEFILES_DIR} 下的可链接文件。",
         ).pack(side=tk.LEFT)
         self.make_button(
             actions,
             "创建项目",
             self.create_project,
-            "在创建位置下新建项目目录，创建 AgentFiles 链接，并可同步初始化 Git。",
+            "在创建位置下新建项目目录，创建 ModuleFiles 链接，并可同步初始化 Git。",
         ).pack(side=tk.RIGHT)
 
-        list_frame = ttk.LabelFrame(self.new_project_tab, text="AgentFiles")
+        list_frame = ttk.LabelFrame(self.new_project_tab, text="ModuleFiles")
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        self.agent_canvas = tk.Canvas(list_frame, highlightthickness=0)
+        self.module_canvas = tk.Canvas(list_frame, highlightthickness=0)
         scrollbar = ttk.Scrollbar(
-            list_frame, orient=tk.VERTICAL, command=self.agent_canvas.yview
+            list_frame, orient=tk.VERTICAL, command=self.module_canvas.yview
         )
-        self.agent_inner = ttk.Frame(self.agent_canvas)
-        self.agent_inner.bind(
+        self.module_inner = ttk.Frame(self.module_canvas)
+        self.module_inner.bind(
             "<Configure>",
-            lambda _event: self.agent_canvas.configure(
-                scrollregion=self.agent_canvas.bbox("all")
+            lambda _event: self.module_canvas.configure(
+                scrollregion=self.module_canvas.bbox("all")
             ),
         )
-        self.agent_canvas.create_window((0, 0), window=self.agent_inner, anchor=tk.NW)
-        self.agent_canvas.configure(yscrollcommand=scrollbar.set)
-        self.agent_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.module_canvas.create_window((0, 0), window=self.module_inner, anchor=tk.NW)
+        self.module_canvas.configure(yscrollcommand=scrollbar.set)
+        self.module_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_git_tab(self) -> None:
@@ -700,32 +700,32 @@ class ProgramPmApp(tk.Tk):
         self.output = ScrolledText(self.git_tab, height=20, wrap=tk.WORD)
         self.output.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
-    def _load_agent_files(self) -> None:
-        for child in self.agent_inner.winfo_children():
+    def _load_module_files(self) -> None:
+        for child in self.module_inner.winfo_children():
             child.destroy()
-        self.agent_vars.clear()
-        agent_files = list_agent_files()
-        if not agent_files:
+        self.module_vars.clear()
+        module_files = list_module_files()
+        if not module_files:
             ttk.Label(
-                self.agent_inner,
-                text=f"未找到 AgentFiles: {AGENTFILES_DIR}",
+                self.module_inner,
+                text=f"未找到 ModuleFiles: {MODULEFILES_DIR}",
             ).pack(anchor=tk.W, padx=8, pady=8)
             return
-        for path in agent_files:
+        for path in module_files:
             var = tk.BooleanVar(value=False)
-            self.agent_vars[path] = var
+            self.module_vars[path] = var
             ttk.Checkbutton(
-                self.agent_inner,
+                self.module_inner,
                 text=f"{path.name}  ->  {path}",
                 variable=var,
             ).pack(anchor=tk.W, padx=8, pady=3)
 
-    def select_all_agents(self) -> None:
-        for var in self.agent_vars.values():
+    def select_all_modules(self) -> None:
+        for var in self.module_vars.values():
             var.set(True)
 
-    def clear_agents(self) -> None:
-        for var in self.agent_vars.values():
+    def clear_modules(self) -> None:
+        for var in self.module_vars.values():
             var.set(False)
 
     def choose_create_base(self) -> None:
@@ -746,9 +746,7 @@ class ProgramPmApp(tk.Tk):
         base_name = sanitize_project_name(base.name)
         use_base_as_project = base_name == project_name
         project_path = base if use_base_as_project else base / project_name
-        selected = [path for path, var in self.agent_vars.items() if var.get()]
-        if not selected:
-            selected = list(self.agent_vars.keys())
+        selected = [path for path, var in self.module_vars.items() if var.get()]
 
         link_types: set[str] = set()
         try:
@@ -767,7 +765,7 @@ class ProgramPmApp(tk.Tk):
             messagebox.showerror(
                 "链接创建失败",
                 "已尝试符号链接和硬链接，但都未能创建。\n"
-                "请确认 AgentFiles 和项目目录在同一磁盘，且目标文件没有被占用。\n\n"
+                "请确认 ModuleFiles 和项目目录在同一磁盘，且目标文件没有被占用。\n\n"
                 f"{exc}",
             )
             return
@@ -792,13 +790,13 @@ class ProgramPmApp(tk.Tk):
                 messagebox.showinfo(
                     "完成",
                     f"已创建项目并初始化 Git：{project_path}\n"
-                    f"AgentFiles 链接类型：{link_summary}",
+                    f"ModuleFiles 链接类型：{link_summary}",
                 )
         else:
             messagebox.showinfo(
                 "完成",
                 f"已创建项目：{project_path}\n"
-                f"AgentFiles 链接类型：{link_summary}",
+                f"ModuleFiles 链接类型：{link_summary}",
             )
         self.refresh_git_status()
 

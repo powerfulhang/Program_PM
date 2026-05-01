@@ -1,7 +1,7 @@
 [project]
 name = "program-pm"
 version = "0.1.0"
-description = "Windows project manager GUI for AgentFiles and GitHub workflows."
+description = "Windows project manager GUI for ModuleFiles and GitHub workflows."
 requires-python = ">=3.10"
 dependencies = []
 
