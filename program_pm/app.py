@@ -5,6 +5,7 @@ import datetime as dt
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import tkinter as tk
@@ -22,6 +23,9 @@ GITHUB_EMAIL = "hangshi1023@gmail.com"
 DEFAULT_BRANCH = "main"
 REMOTE_NAME = "origin"
 AUTO_GENERATED_CONFIG_FILES = [".gitignore", ".gitattributes"]
+GH_CANDIDATES = [
+    Path(r"C:\tmp\gh_2.92.0_windows_amd64\bin\gh.exe"),
+]
 
 
 @dataclass
@@ -30,6 +34,26 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+@dataclass
+class BranchInfo:
+    name: str
+    upstream: str
+    commit: str
+    date: str
+    subject: str
+    is_current: bool = False
+    is_remote: bool = False
+
+
+@dataclass
+class ReleaseInfo:
+    title: str
+    status: str
+    tag: str
+    published_at: str
+    source: str = "GitHub"
 
 
 def run_command(command: list[str], cwd: Path, timeout: int = 60) -> CommandResult:
@@ -146,6 +170,21 @@ def github_remote(repo_name: str) -> str:
     return f"ssh://git@ssh.github.com:443/{GITHUB_USER}/{repo_name}.git"
 
 
+def find_gh_executable() -> str | None:
+    """Return a usable GitHub CLI executable when one is available.
+
+    Ref: GitHub CLI manual, `gh release` manages releases:
+    https://cli.github.com/manual/gh_release
+    """
+    found = shutil.which("gh")
+    if found:
+        return found
+    for candidate in GH_CANDIDATES:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def repository_name_from_remote_url(remote_url: str) -> str | None:
     """Extract a GitHub repository name from common remote URL forms.
 
@@ -172,6 +211,35 @@ def repository_name_from_remote_url(remote_url: str) -> str | None:
     if repo_name.endswith(".git"):
         repo_name = repo_name[:-4]
     return sanitize_project_name(repo_name) or None
+
+
+def repository_owner_name_from_remote_url(remote_url: str) -> str | None:
+    """Extract owner/repo from common GitHub remote URL forms."""
+    url = remote_url.strip()
+    if not url:
+        return None
+
+    path = ""
+    if "://" in url:
+        path = urlparse(url).path
+    elif ":" in url and "@" in url.split(":", 1)[0]:
+        path = url.split(":", 1)[1]
+    else:
+        path = url
+
+    parts = [part for part in path.replace("\\", "/").split("/") if part]
+    if len(parts) < 2:
+        return None
+    owner = parts[-2]
+    repo = parts[-1][:-4] if parts[-1].endswith(".git") else parts[-1]
+    if not owner or not repo:
+        return None
+    return f"{owner}/{repo}"
+
+
+def configured_repo_full_name(project_path: Path, repo_name: str) -> str:
+    remote = configured_or_default_remote(project_path, repo_name)
+    return repository_owner_name_from_remote_url(remote) or f"{GITHUB_USER}/{repo_name}"
 
 
 def configured_or_default_remote(project_path: Path, repo_name: str) -> str:
@@ -298,6 +366,128 @@ def current_git_branch(project_path: Path) -> tuple[str | None, str | None]:
     if not branch or branch == "HEAD":
         return None, "当前仓库处于 detached HEAD 状态，无法确定要推送的分支。"
     return branch, None
+
+
+def current_git_upstream(project_path: Path) -> str:
+    result = run_command(
+        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        project_path,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def git_dirty_count(project_path: Path) -> int:
+    result = run_command(["git", "status", "--short"], project_path)
+    if result.returncode != 0:
+        return 0
+    return len([line for line in result.stdout.splitlines() if line.strip()])
+
+
+def git_ahead_behind(project_path: Path) -> tuple[int | None, int | None]:
+    upstream = current_git_upstream(project_path)
+    if not upstream:
+        return None, None
+    result = run_command(
+        ["git", "rev-list", "--left-right", "--count", f"HEAD...{upstream}"],
+        project_path,
+    )
+    if result.returncode != 0:
+        return None, None
+    parts = result.stdout.split()
+    if len(parts) != 2:
+        return None, None
+    return int(parts[0]), int(parts[1])
+
+
+def list_branches(project_path: Path) -> list[BranchInfo]:
+    """List local and origin branches with upstream and commit context.
+
+    Ref: Git for-each-ref manual, `--format` prints selected ref fields:
+    https://git-scm.com/docs/git-for-each-ref
+    """
+    current, _error = current_git_branch(project_path)
+    result = run_command(
+        [
+            "git",
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)|%(upstream:short)|%(objectname:short)|%(committerdate:short)|%(subject)",
+            "refs/heads",
+            f"refs/remotes/{REMOTE_NAME}",
+        ],
+        project_path,
+    )
+    if result.returncode != 0:
+        return []
+
+    branches: list[BranchInfo] = []
+    for line in result.stdout.splitlines():
+        parts = line.split("|", 4)
+        if len(parts) != 5:
+            continue
+        name, upstream, commit, date, subject = parts
+        if name == f"{REMOTE_NAME}/HEAD":
+            continue
+        is_remote = name.startswith(f"{REMOTE_NAME}/")
+        local_name = name[len(f"{REMOTE_NAME}/") :] if is_remote else name
+        branches.append(
+            BranchInfo(
+                name=name,
+                upstream=upstream,
+                commit=commit,
+                date=date,
+                subject=subject,
+                is_current=local_name == current and not is_remote,
+                is_remote=is_remote,
+            )
+        )
+    return branches
+
+
+def list_release_info(project_path: Path, repo_name: str) -> tuple[list[ReleaseInfo], str | None]:
+    """Read GitHub releases through gh, falling back to local tags."""
+    repo = configured_repo_full_name(project_path, repo_name)
+    gh = find_gh_executable()
+    if gh:
+        result = run_command(
+            [gh, "release", "list", "--repo", repo, "--limit", "20"],
+            project_path,
+            timeout=20,
+        )
+        if result.returncode == 0:
+            releases: list[ReleaseInfo] = []
+            for line in result.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 4:
+                    releases.append(
+                        ReleaseInfo(
+                            title=parts[0],
+                            status=parts[1],
+                            tag=parts[2],
+                            published_at=parts[3],
+                        )
+                    )
+            return releases, None
+        gh_error = (result.stderr or result.stdout).strip()
+        tags = run_command(["git", "tag", "--list", "--sort=-creatordate"], project_path)
+        if tags.returncode == 0 and tags.stdout.strip():
+            releases = [
+                ReleaseInfo(tag, "local tag", tag, "", source="Git")
+                for tag in tags.stdout.splitlines()
+                if tag.strip()
+            ]
+            return releases, f"GitHub release 读取失败，已退回本地 tag：{gh_error}"
+        return [], gh_error
+
+    tags = run_command(["git", "tag", "--list", "--sort=-creatordate"], project_path)
+    if tags.returncode != 0:
+        return [], (tags.stderr or tags.stdout).strip()
+    releases = [
+        ReleaseInfo(tag, "local tag", tag, "", source="Git")
+        for tag in tags.stdout.splitlines()
+        if tag.strip()
+    ]
+    return releases, "未找到 GitHub CLI，只显示本地 tag。"
 
 
 def has_local_commits(project_path: Path) -> bool:
@@ -460,12 +650,13 @@ class ProgramPmApp(tk.Tk):
     def __init__(self, start_dir: Path) -> None:
         super().__init__()
         self.title("Program PM")
-        self.geometry("980x680")
-        self.minsize(880, 560)
+        self.geometry("1180x760")
+        self.minsize(1040, 680)
         self.start_dir = start_dir
         self.output_queue: queue.Queue[str] = queue.Queue()
         self.module_vars: dict[Path, tk.BooleanVar] = {}
 
+        self._configure_style()
         self._build_ui()
         self._load_module_files()
         self._poll_output()
@@ -484,6 +675,35 @@ class ProgramPmApp(tk.Tk):
         button = ttk.Button(parent, text=text, command=command)
         self.add_tooltip(button, tooltip)
         return button
+
+    def _configure_style(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.configure(background="#f6f7f9")
+        style.configure("TFrame", background="#f6f7f9")
+        style.configure("Panel.TFrame", background="#ffffff", relief=tk.FLAT)
+        style.configure("TLabel", background="#f6f7f9", foreground="#1f2937")
+        style.configure("Panel.TLabel", background="#ffffff", foreground="#1f2937")
+        style.configure(
+            "Section.TLabel",
+            background="#ffffff",
+            foreground="#111827",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        style.configure(
+            "Muted.TLabel",
+            background="#ffffff",
+            foreground="#6b7280",
+            font=("Microsoft YaHei UI", 9),
+        )
+        style.configure("TButton", padding=(10, 5))
+        style.configure("Accent.TButton", padding=(12, 6))
+        style.configure("Panel.TCheckbutton", background="#ffffff", foreground="#1f2937")
+        style.configure("Treeview", rowheight=26, fieldbackground="#ffffff")
+        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"))
 
     def _build_ui(self) -> None:
         notebook = ttk.Notebook(self)
@@ -572,9 +792,18 @@ class ProgramPmApp(tk.Tk):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_git_tab(self) -> None:
-        top = ttk.Frame(self.git_tab)
-        top.pack(fill=tk.X, padx=10, pady=10)
-        ttk.Label(top, text="项目路径").grid(row=0, column=0, sticky=tk.W)
+        shell = ttk.Frame(self.git_tab)
+        shell.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
+        shell.columnconfigure(0, weight=1)
+        shell.columnconfigure(1, weight=1)
+        shell.rowconfigure(2, weight=1)
+
+        top = ttk.Frame(shell, style="Panel.TFrame")
+        top.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 10))
+        top.columnconfigure(1, weight=1)
+        ttk.Label(top, text="项目路径", style="Panel.TLabel").grid(
+            row=0, column=0, sticky=tk.W, padx=(12, 8), pady=12
+        )
         self.project_path_var = tk.StringVar(value=str(self.start_dir))
         ttk.Entry(top, textvariable=self.project_path_var).grid(
             row=0, column=1, sticky=tk.EW, padx=8
@@ -584,98 +813,228 @@ class ProgramPmApp(tk.Tk):
             "选择",
             self.choose_project_path,
             "选择要管理的现有项目目录。",
-        ).grid(row=0, column=2)
-        top.columnconfigure(1, weight=1)
+        ).grid(row=0, column=2, padx=(0, 12))
 
-        info = ttk.Frame(self.git_tab)
-        info.pack(fill=tk.X, padx=10)
+        status_panel = ttk.Frame(shell, style="Panel.TFrame")
+        status_panel.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 10))
+        for column in range(4):
+            status_panel.columnconfigure(column, weight=1)
         self.repo_name_var = tk.StringVar(value=self.start_dir.name)
         self.branch_var = tk.StringVar(value=DEFAULT_BRANCH)
         self.commit_message_var = tk.StringVar(value="Update project")
-        ttk.Label(info, text="仓库名").grid(row=0, column=0, sticky=tk.W)
-        repo_entry = ttk.Entry(info, textvariable=self.repo_name_var, width=28)
-        repo_entry.grid(
-            row=0, column=1, sticky=tk.W, padx=8
-        )
-        repo_entry.bind("<FocusOut>", lambda _event: self.refresh_git_status())
-        repo_entry.bind("<Return>", lambda _event: self.refresh_git_status())
-        ttk.Label(info, text="初始化分支").grid(row=0, column=2, sticky=tk.W, padx=(18, 0))
-        branch_entry = ttk.Entry(info, textvariable=self.branch_var, width=16)
-        branch_entry.grid(
-            row=0, column=3, sticky=tk.W, padx=8
-        )
-        branch_entry.bind("<FocusOut>", lambda _event: self.refresh_git_status())
-        branch_entry.bind("<Return>", lambda _event: self.refresh_git_status())
-        ttk.Label(info, text="提交信息").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
-        ttk.Entry(info, textvariable=self.commit_message_var).grid(
-            row=1, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(8, 0)
-        )
-        info.columnconfigure(1, weight=1)
+        self.current_branch_var = tk.StringVar(value="-")
+        self.upstream_var = tk.StringVar(value="-")
+        self.sync_state_var = tk.StringVar(value="-")
+        self.worktree_state_var = tk.StringVar(value="-")
+        self.latest_release_var = tk.StringVar(value="-")
 
-        buttons = ttk.Frame(self.git_tab)
-        buttons.pack(fill=tk.X, padx=10, pady=10)
-        for label, command, tooltip in [
-            (
-                "刷新本地 Git 状态",
-                self.refresh_git_status_with_output,
-                "优先从 origin 读取真实 GitHub 仓库名，读不到时用当前项目文件夹名，再刷新状态。",
-            ),
-            (
-                "检测远程连接",
-                self.check_remote,
-                "检查当前 origin 或仓库名对应的 GitHub SSH 443 远程是否可访问。",
-            ),
-            (
-                "重置 Git 配置",
-                self.reset_git_config,
-                "按当前仓库名重置 Git 用户身份、.gitignore、.gitattributes 和 443 远程；未初始化时会先初始化。",
-            ),
-            (
-                "获取",
-                self.git_fetch,
-                "从远程仓库获取最新分支信息，但不修改本地文件。",
-            ),
-            (
-                "拉取",
-                self.git_pull,
-                "动态读取当前分支，并从 origin 的同名分支拉取更新。",
-            ),
-            (
-                "状态详情",
-                self.git_status_detail,
-                "用中文显示当前分支、跟踪分支和文件改动列表。",
-            ),
-            (
-                "添加全部",
-                self.git_add_all,
-                "把当前项目里的新增、修改、删除全部加入暂存区。",
-            ),
-            (
-                "提交",
-                self.git_commit,
-                "用上方提交信息创建一次本地 Git 提交。",
-            ),
-            (
-                "推送",
-                self.git_push,
-                "动态读取当前分支，先确认远程仓库可访问，再推送到 origin。",
-            ),
-            (
-                "最近提交",
-                self.git_log,
-                "用中文列表显示最近 20 条提交记录。",
-            ),
+        self._make_metric(status_panel, 0, "当前分支", self.current_branch_var)
+        self._make_metric(status_panel, 1, "上游分支", self.upstream_var)
+        self._make_metric(status_panel, 2, "同步状态", self.sync_state_var)
+        self._make_metric(status_panel, 3, "工作区", self.worktree_state_var)
+
+        left = ttk.Frame(shell, style="Panel.TFrame")
+        left.grid(row=2, column=0, sticky=tk.NSEW, padx=(0, 6))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(2, weight=1)
+
+        right = ttk.Frame(shell, style="Panel.TFrame")
+        right.grid(row=2, column=1, sticky=tk.NSEW, padx=(6, 0))
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(2, weight=1)
+
+        ttk.Label(left, text="分支管理", style="Section.TLabel").grid(
+            row=0, column=0, sticky=tk.W, padx=12, pady=(12, 4)
+        )
+        branch_controls = ttk.Frame(left, style="Panel.TFrame")
+        branch_controls.grid(row=1, column=0, sticky=tk.EW, padx=12, pady=(4, 8))
+        branch_controls.columnconfigure(1, weight=1)
+        self.branch_select_var = tk.StringVar()
+        ttk.Label(branch_controls, text="切换到", style="Panel.TLabel").grid(
+            row=0, column=0, sticky=tk.W
+        )
+        self.branch_combo = ttk.Combobox(
+            branch_controls,
+            textvariable=self.branch_select_var,
+            state="readonly",
+            width=34,
+        )
+        self.branch_combo.grid(row=0, column=1, sticky=tk.EW, padx=8)
+        self.make_button(
+            branch_controls,
+            "切换",
+            self.checkout_selected_branch,
+            "切换到列表中选中的本地或远端分支。",
+        ).grid(row=0, column=2)
+
+        self.new_branch_var = tk.StringVar()
+        ttk.Label(branch_controls, text="新分支", style="Panel.TLabel").grid(
+            row=1, column=0, sticky=tk.W, pady=(8, 0)
+        )
+        ttk.Entry(branch_controls, textvariable=self.new_branch_var).grid(
+            row=1, column=1, sticky=tk.EW, padx=8, pady=(8, 0)
+        )
+        self.make_button(
+            branch_controls,
+            "创建并切换",
+            self.create_branch,
+            "从当前 HEAD 创建新分支并切换过去。",
+        ).grid(row=1, column=2, pady=(8, 0))
+
+        self.branch_tree = ttk.Treeview(
+            left,
+            columns=("name", "kind", "upstream", "commit", "date", "subject"),
+            show="headings",
+            height=11,
+        )
+        for column, heading, width in [
+            ("name", "分支", 170),
+            ("kind", "类型", 70),
+            ("upstream", "上游", 150),
+            ("commit", "提交", 80),
+            ("date", "日期", 90),
+            ("subject", "说明", 260),
         ]:
-            self.make_button(buttons, label, command, tooltip).pack(
+            self.branch_tree.heading(column, text=heading)
+            self.branch_tree.column(column, width=width, anchor=tk.W)
+        self.branch_tree.grid(row=2, column=0, sticky=tk.NSEW, padx=12, pady=(0, 10))
+
+        git_actions = ttk.Frame(left, style="Panel.TFrame")
+        git_actions.grid(row=3, column=0, sticky=tk.EW, padx=12, pady=(0, 12))
+        for label, command, tooltip in [
+            ("刷新", self.refresh_git_status_with_output, "重新读取分支、状态和 release 信息。"),
+            ("检测远程", self.check_remote, "检查当前 origin 或仓库名对应的 GitHub SSH 443 远程。"),
+            ("重置 Git", self.reset_git_config, "按当前仓库名重置 Git 身份、忽略规则和远程地址。"),
+            ("获取", self.git_fetch, "从远程仓库获取最新分支信息，但不修改本地文件。"),
+            ("拉取", self.git_pull, "从当前分支的上游或 origin 同名分支拉取更新。"),
+            ("推送当前分支", self.git_push, "先确认远程仓库可访问，再推送当前分支并设置上游。"),
+            ("状态详情", self.git_status_detail, "显示当前分支、跟踪分支和文件改动列表。"),
+            ("最近提交", self.git_log, "显示最近 20 条提交记录。"),
+        ]:
+            self.make_button(git_actions, label, command, tooltip).pack(
                 side=tk.LEFT, padx=(0, 6), pady=3
             )
 
-        self.status_var = tk.StringVar(value="未检测")
-        ttk.Label(self.git_tab, textvariable=self.status_var).pack(
-            fill=tk.X, padx=10, pady=(0, 8)
+        ttk.Label(right, text="提交与发布", style="Section.TLabel").grid(
+            row=0, column=0, sticky=tk.W, padx=12, pady=(12, 4)
         )
-        self.output = ScrolledText(self.git_tab, height=20, wrap=tk.WORD)
-        self.output.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        commit_panel = ttk.Frame(right, style="Panel.TFrame")
+        commit_panel.grid(row=1, column=0, sticky=tk.EW, padx=12, pady=(4, 10))
+        commit_panel.columnconfigure(1, weight=1)
+        ttk.Label(commit_panel, text="仓库名", style="Panel.TLabel").grid(row=0, column=0)
+        repo_entry = ttk.Entry(commit_panel, textvariable=self.repo_name_var, width=24)
+        repo_entry.grid(row=0, column=1, sticky=tk.EW, padx=8)
+        repo_entry.bind("<FocusOut>", lambda _event: self.refresh_git_status())
+        repo_entry.bind("<Return>", lambda _event: self.refresh_git_status())
+        ttk.Label(commit_panel, text="新项目默认分支", style="Panel.TLabel").grid(
+            row=0, column=2, padx=(8, 0)
+        )
+        ttk.Entry(commit_panel, textvariable=self.branch_var, width=14).grid(
+            row=0, column=3, padx=(8, 0)
+        )
+        ttk.Label(commit_panel, text="提交信息", style="Panel.TLabel").grid(
+            row=1, column=0, pady=(8, 0)
+        )
+        ttk.Entry(commit_panel, textvariable=self.commit_message_var).grid(
+            row=1, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(8, 0)
+        )
+        self.make_button(commit_panel, "添加全部", self.git_add_all, "暂存当前项目所有改动。").grid(
+            row=2, column=2, sticky=tk.E, pady=(8, 0)
+        )
+        self.make_button(commit_panel, "提交", self.git_commit, "用上方提交信息创建本地提交。").grid(
+            row=2, column=3, sticky=tk.E, padx=(8, 0), pady=(8, 0)
+        )
+
+        release_panel = ttk.Frame(right, style="Panel.TFrame")
+        release_panel.grid(row=2, column=0, sticky=tk.NSEW, padx=12, pady=(0, 10))
+        release_panel.columnconfigure(0, weight=1)
+        release_panel.rowconfigure(2, weight=1)
+        ttk.Label(release_panel, text="Latest Release", style="Muted.TLabel").grid(
+            row=0, column=0, sticky=tk.W
+        )
+        ttk.Label(release_panel, textvariable=self.latest_release_var, style="Panel.TLabel").grid(
+            row=1, column=0, sticky=tk.W, pady=(0, 8)
+        )
+        self.release_tree = ttk.Treeview(
+            release_panel,
+            columns=("title", "status", "tag", "published", "source"),
+            show="headings",
+            height=8,
+        )
+        for column, heading, width in [
+            ("title", "Release", 170),
+            ("status", "状态", 90),
+            ("tag", "Tag", 120),
+            ("published", "发布时间", 160),
+            ("source", "来源", 70),
+        ]:
+            self.release_tree.heading(column, text=heading)
+            self.release_tree.column(column, width=width, anchor=tk.W)
+        self.release_tree.grid(row=2, column=0, sticky=tk.NSEW)
+
+        release_form = ttk.Frame(right, style="Panel.TFrame")
+        release_form.grid(row=3, column=0, sticky=tk.EW, padx=12, pady=(0, 12))
+        release_form.columnconfigure(1, weight=1)
+        self.release_tag_var = tk.StringVar(value="v1.0.0")
+        self.release_title_var = tk.StringVar()
+        self.release_notes_var = tk.StringVar()
+        self.release_draft_var = tk.BooleanVar(value=False)
+        self.release_prerelease_var = tk.BooleanVar(value=False)
+        ttk.Label(release_form, text="Tag", style="Panel.TLabel").grid(row=0, column=0)
+        ttk.Entry(release_form, textvariable=self.release_tag_var, width=16).grid(
+            row=0, column=1, sticky=tk.EW, padx=8
+        )
+        ttk.Label(release_form, text="标题", style="Panel.TLabel").grid(row=0, column=2)
+        ttk.Entry(release_form, textvariable=self.release_title_var, width=22).grid(
+            row=0, column=3, sticky=tk.EW, padx=(8, 0)
+        )
+        ttk.Label(release_form, text="说明", style="Panel.TLabel").grid(
+            row=1, column=0, pady=(8, 0)
+        )
+        ttk.Entry(release_form, textvariable=self.release_notes_var).grid(
+            row=1, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(8, 0)
+        )
+        ttk.Checkbutton(
+            release_form,
+            text="Draft",
+            variable=self.release_draft_var,
+            style="Panel.TCheckbutton",
+        ).grid(row=2, column=1, sticky=tk.W, pady=(8, 0))
+        ttk.Checkbutton(
+            release_form,
+            text="Prerelease",
+            variable=self.release_prerelease_var,
+            style="Panel.TCheckbutton",
+        ).grid(row=2, column=2, sticky=tk.W, pady=(8, 0))
+        self.make_button(
+            release_form,
+            "发布 Release",
+            self.create_release,
+            "用 GitHub CLI 在当前分支或提交上创建 GitHub Release。",
+        ).grid(row=2, column=3, sticky=tk.E, pady=(8, 0))
+
+        bottom = ttk.Frame(shell, style="Panel.TFrame")
+        bottom.grid(row=3, column=0, columnspan=2, sticky=tk.NSEW, pady=(10, 0))
+        bottom.columnconfigure(0, weight=1)
+        bottom.rowconfigure(1, weight=1)
+        self.status_var = tk.StringVar(value="未检测")
+        ttk.Label(bottom, textvariable=self.status_var, style="Panel.TLabel").grid(
+            row=0, column=0, sticky=tk.EW, padx=12, pady=(10, 6)
+        )
+        self.output = ScrolledText(bottom, height=8, wrap=tk.WORD)
+        self.output.grid(row=1, column=0, sticky=tk.NSEW, padx=12, pady=(0, 12))
+
+    def _make_metric(
+        self,
+        parent: tk.Widget,
+        column: int,
+        title: str,
+        variable: tk.StringVar,
+    ) -> None:
+        cell = ttk.Frame(parent, style="Panel.TFrame")
+        cell.grid(row=0, column=column, sticky=tk.EW, padx=12, pady=10)
+        ttk.Label(cell, text=title, style="Muted.TLabel").pack(anchor=tk.W)
+        ttk.Label(cell, textvariable=variable, style="Section.TLabel").pack(anchor=tk.W)
 
     def _load_module_files(self) -> None:
         for child in self.module_inner.winfo_children():
@@ -812,6 +1171,205 @@ class ProgramPmApp(tk.Tk):
             return project_name, source
         return None, source
 
+    def refresh_branch_and_release_views(self) -> None:
+        if not hasattr(self, "branch_tree"):
+            return
+        path = self.project_path()
+        repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
+
+        if not path.exists():
+            self.current_branch_var.set("-")
+            self.upstream_var.set("-")
+            self.sync_state_var.set("-")
+            self.worktree_state_var.set("路径不存在")
+            return
+
+        inside = run_command(["git", "rev-parse", "--is-inside-work-tree"], path)
+        if inside.returncode != 0:
+            self.current_branch_var.set("-")
+            self.upstream_var.set("-")
+            self.sync_state_var.set("未初始化")
+            self.worktree_state_var.set("不是 Git 仓库")
+            self.branch_combo["values"] = []
+            self.branch_tree.delete(*self.branch_tree.get_children())
+            self.release_tree.delete(*self.release_tree.get_children())
+            self.latest_release_var.set("-")
+            return
+
+        branch, branch_error = current_git_branch(path)
+        upstream = current_git_upstream(path)
+        dirty_count = git_dirty_count(path)
+        ahead, behind = git_ahead_behind(path)
+        self.current_branch_var.set(branch or "(detached)")
+        self.upstream_var.set(upstream or "未设置")
+        if ahead is None or behind is None:
+            self.sync_state_var.set("未跟踪")
+        elif ahead == 0 and behind == 0:
+            self.sync_state_var.set("已同步")
+        else:
+            self.sync_state_var.set(f"ahead {ahead} / behind {behind}")
+        self.worktree_state_var.set(
+            "干净" if dirty_count == 0 else f"{dirty_count} 项改动"
+        )
+        if branch_error and not branch:
+            self.status_var.set(branch_error)
+
+        branches = list_branches(path)
+        self.branch_tree.delete(*self.branch_tree.get_children())
+        combo_values: list[str] = []
+        for item in branches:
+            display = f"* {item.name}" if item.is_current else item.name
+            combo_values.append(item.name)
+            kind = "远端" if item.is_remote else "本地"
+            self.branch_tree.insert(
+                "",
+                tk.END,
+                values=(display, kind, item.upstream, item.commit, item.date, item.subject),
+            )
+        self.branch_combo["values"] = combo_values
+        if branch and branch in combo_values:
+            self.branch_select_var.set(branch)
+        elif combo_values:
+            self.branch_select_var.set(combo_values[0])
+
+        releases, release_error = list_release_info(path, repo_name)
+        self.release_tree.delete(*self.release_tree.get_children())
+        if releases:
+            latest = releases[0]
+            self.latest_release_var.set(f"{latest.tag} | {latest.title} | {latest.status}")
+        else:
+            self.latest_release_var.set(release_error or "暂无 release/tag")
+        for release in releases:
+            self.release_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    release.title,
+                    release.status,
+                    release.tag,
+                    release.published_at,
+                    release.source,
+                ),
+            )
+
+    def checkout_selected_branch(self) -> None:
+        target = self.branch_select_var.get().strip()
+        if not target:
+            messagebox.showerror("切换失败", "请先选择一个分支。")
+            return
+        path = self.project_path()
+
+        def worker() -> None:
+            self.append_command_start("切换分支")
+            if target.startswith(f"{REMOTE_NAME}/"):
+                local_name = target[len(f"{REMOTE_NAME}/") :]
+                local_exists = run_command(["git", "show-ref", "--verify", f"refs/heads/{local_name}"], path)
+                command = (
+                    ["git", "switch", local_name]
+                    if local_exists.returncode == 0
+                    else ["git", "switch", "--track", target]
+                )
+            else:
+                command = ["git", "switch", target]
+            result = run_command(command, path)
+            if result.returncode == 0:
+                self.enqueue(f"已切换到分支：{target}\n")
+            else:
+                self.enqueue(f"切换失败：{result.stderr or result.stdout}\n")
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def create_branch(self) -> None:
+        branch_name = self.new_branch_var.get().strip()
+        if not branch_name:
+            messagebox.showerror("创建失败", "请输入新分支名。")
+            return
+        path = self.project_path()
+
+        def worker() -> None:
+            self.append_command_start("创建并切换分支")
+            check = run_command(["git", "check-ref-format", "--branch", branch_name], path)
+            if check.returncode != 0:
+                self.enqueue(f"分支名无效：{check.stderr or check.stdout}\n")
+                self.append_command_done()
+                return
+            result = run_command(["git", "switch", "-c", branch_name], path)
+            if result.returncode == 0:
+                self.enqueue(f"已创建并切换到分支：{branch_name}\n")
+                self.after(0, lambda: self.new_branch_var.set(""))
+            else:
+                self.enqueue(f"创建失败：{result.stderr or result.stdout}\n")
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def create_release(self) -> None:
+        path = self.project_path()
+        repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
+        repo = configured_repo_full_name(path, repo_name)
+        tag = self.release_tag_var.get().strip()
+        title = self.release_title_var.get().strip() or tag
+        notes = self.release_notes_var.get().strip()
+        if not tag:
+            messagebox.showerror("发布失败", "请输入 release tag。")
+            return
+        gh = find_gh_executable()
+        if not gh:
+            messagebox.showerror("发布失败", "未找到 GitHub CLI，无法创建 GitHub Release。")
+            return
+        branch, branch_error = current_git_branch(path)
+        if not branch:
+            messagebox.showerror("发布失败", branch_error or "无法读取当前分支。")
+            return
+        dirty_count = git_dirty_count(path)
+        if dirty_count and not messagebox.askyesno(
+            "工作区有改动",
+            f"当前工作区还有 {dirty_count} 项未提交改动，仍然继续发布？",
+        ):
+            return
+
+        def worker() -> None:
+            self.append_command_start("发布 Release")
+            # Ref: GitHub CLI manual, gh release create supports --target,
+            # --title, --notes, --draft, --prerelease, and --generate-notes.
+            command = [
+                gh,
+                "release",
+                "create",
+                tag,
+                "--repo",
+                repo,
+                "--target",
+                branch,
+                "--title",
+                title,
+            ]
+            if notes:
+                command.extend(["--notes", notes])
+            else:
+                command.append("--generate-notes")
+            if self.release_draft_var.get():
+                command.append("--draft")
+            if self.release_prerelease_var.get():
+                command.append("--prerelease")
+            result = run_command(command, path, timeout=180)
+            if result.returncode == 0:
+                self.enqueue(f"Release 已发布：{repo} {tag}\n")
+                if result.stdout.strip():
+                    self.enqueue(result.stdout)
+                fetch_tags = run_command(["git", "fetch", "--tags", REMOTE_NAME], path, 120)
+                if fetch_tags.returncode == 0:
+                    self.enqueue("已同步远端 tags 到本地。\n")
+            else:
+                self.enqueue(f"发布失败：{result.stderr or result.stdout}\n")
+            self.append_command_done()
+            self.after(0, self.refresh_git_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def append_output(self, text: str) -> None:
         self.output.insert(tk.END, text)
         self.output.see(tk.END)
@@ -897,6 +1455,7 @@ class ProgramPmApp(tk.Tk):
 
     def refresh_git_status(self) -> None:
         self.status_var.set(self.collect_git_status_text())
+        self.refresh_branch_and_release_views()
 
     def refresh_git_status_with_output(self) -> None:
         self.append_command_start("刷新本地 Git 状态")
@@ -1069,8 +1628,13 @@ class ProgramPmApp(tk.Tk):
                         f"检测到远端已有 {names}，已先备份本地自动生成版本到：{backup_folder}\n"
                     )
 
-            self.enqueue(f"当前将从 origin/{branch} 拉取更新。\n")
-            result = run_command(["git", "pull", REMOTE_NAME, branch], path, 120)
+            upstream = current_git_upstream(path)
+            if upstream:
+                self.enqueue(f"当前将从上游分支 {upstream} 拉取更新。\n")
+                result = run_command(["git", "pull"], path, 120)
+            else:
+                self.enqueue(f"当前将从 origin/{branch} 拉取更新。\n")
+                result = run_command(["git", "pull", REMOTE_NAME, branch], path, 120)
             self.enqueue(f"{summarize_simple_git_result('pull', result)}\n")
             detail = (result.stderr or result.stdout).strip()
             if result.returncode == 0 and first_pull:
@@ -1131,6 +1695,12 @@ class ProgramPmApp(tk.Tk):
                 self.after(0, self.refresh_git_status)
                 return
 
+            configure_result = configure_git_remote(path, remote_url)
+            if configure_result.returncode != 0:
+                self.enqueue(f"推送已停止：无法配置 origin。{configure_result.stderr or configure_result.stdout}\n")
+                self.append_command_done()
+                self.after(0, self.refresh_git_status)
+                return
             self.enqueue(f"远程仓库可访问，开始推送当前分支 {branch}...\n")
             push_result = run_command(["git", "push", "-u", REMOTE_NAME, branch], path, 120)
             if push_result.returncode == 0:

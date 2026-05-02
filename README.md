@@ -3,14 +3,13 @@
 Windows 项目管理 GUI 工具，用于：
 
 - 从任意目录启动后，在当前目录创建新项目；
-- 从 `F:\Working Files\Coding\AgentFiles` 勾选 AGENTS 文件并创建链接；
+- 从 `F:\Working Files\Coding\ModuleFiles` 勾选模板文件并复制到新项目；
 - 新建项目时可同步初始化 Git；
-- 在 GUI 中执行常见 Git/GitHub 操作；
+- 在 GUI 中管理当前项目的分支、提交、拉取、推送和最近提交；
+- 读取本地 tag / GitHub release，并通过 GitHub CLI 发布 release；
 - 默认使用 GitHub SSH 443 端口远程地址。
 
-在 Windows 上，即使当前账户属于管理员组，普通启动的程序也不一定拥有创建符号链接的权限。
-工具会优先创建符号链接；如果系统拒绝，会自动退回为硬链接。硬链接同样会共享同一份文件内容，
-适合本工具引用 AGENTS 文件的场景。
+模板文件会被复制到新项目目录中；复制后不再跟随 `ModuleFiles` 中的源文件自动更新。
 
 如果“创建位置”的最后一级目录名已经等于“项目名称”，工具会直接把该目录作为项目目录，
 不会再创建一层同名子目录。
@@ -77,3 +76,22 @@ program-pm
 在项目管理页切换项目路径后，“刷新本地 Git 状态”会优先从 `origin` 远程地址读取
 真实 GitHub 仓库名；如果没有 `origin` 或解析失败，才按当前项目文件夹名自动更新仓库名。
 如果 `origin` 与仓库名推导出的 GitHub 地址不一致，状态栏会提示使用“重置 Git 配置”更新。
+
+## 分支与发布
+
+项目管理页会读取当前项目的真实 Git 状态，而不是把“新项目默认分支”当作当前分支。界面会显示：
+
+- 当前分支、上游分支、ahead/behind 和工作区改动数量；
+- 本地分支与 `origin/*` 远端分支列表；
+- 当前仓库的 GitHub release 列表；如果找不到 GitHub CLI，则退回显示本地 tag。
+
+分支操作支持：
+
+- 切换到本地分支；
+- 从 `origin/<branch>` 创建跟踪分支并切换；
+- 从当前 HEAD 创建新分支；
+- 推送当前分支并设置 upstream。
+
+发布 release 依赖 GitHub CLI。工具会优先使用 PATH 中的 `gh`，也会识别本机已安装的
+`C:\tmp\gh_2.92.0_windows_amd64\bin\gh.exe`。发布时会使用当前分支作为 `gh release create --target`
+目标；如果未填写说明，则使用 GitHub 自动生成 release notes。
