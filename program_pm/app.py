@@ -12,7 +12,6 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
 from typing import Callable
 from urllib.parse import urlparse
 
@@ -650,10 +649,14 @@ class ProgramPmApp(tk.Tk):
     def __init__(self, start_dir: Path) -> None:
         super().__init__()
         self.title("Program PM")
-        self.geometry("1180x760")
-        self.minsize(1040, 680)
+        self.geometry("1060x700")
+        self.minsize(1060, 700)
+        self.maxsize(1060, 700)
+        self.resizable(False, False)
         self.start_dir = start_dir
-        self.output_queue: queue.Queue[str] = queue.Queue()
+        self.output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        self.dialog_title = "操作结果"
+        self.dialog_lines: list[str] = []
         self.module_vars: dict[Path, tk.BooleanVar] = {}
 
         self._configure_style()
@@ -671,8 +674,12 @@ class ProgramPmApp(tk.Tk):
         text: str,
         command: Callable[[], None],
         tooltip: str,
+        width: int | None = None,
     ) -> ttk.Button:
-        button = ttk.Button(parent, text=text, command=command)
+        options = {"text": text, "command": command}
+        if width is not None:
+            options["width"] = width
+        button = ttk.Button(parent, **options)
         self.add_tooltip(button, tooltip)
         return button
 
@@ -699,8 +706,10 @@ class ProgramPmApp(tk.Tk):
             foreground="#6b7280",
             font=("Microsoft YaHei UI", 9),
         )
-        style.configure("TButton", padding=(10, 5))
-        style.configure("Accent.TButton", padding=(12, 6))
+        style.configure("TButton", padding=(7, 4))
+        style.configure("Accent.TButton", padding=(9, 5))
+        style.configure("TEntry", padding=(4, 3))
+        style.configure("TCombobox", padding=(4, 3))
         style.configure("Panel.TCheckbutton", background="#ffffff", foreground="#1f2937")
         style.configure("Treeview", rowheight=26, fieldbackground="#ffffff")
         style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"))
@@ -793,16 +802,16 @@ class ProgramPmApp(tk.Tk):
 
     def _build_git_tab(self) -> None:
         shell = ttk.Frame(self.git_tab)
-        shell.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
-        shell.columnconfigure(0, weight=1)
-        shell.columnconfigure(1, weight=1)
+        shell.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        shell.columnconfigure(0, weight=1, uniform="main_panels")
+        shell.columnconfigure(1, weight=1, uniform="main_panels")
         shell.rowconfigure(2, weight=1)
 
         top = ttk.Frame(shell, style="Panel.TFrame")
-        top.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 10))
+        top.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
         top.columnconfigure(1, weight=1)
         ttk.Label(top, text="项目路径", style="Panel.TLabel").grid(
-            row=0, column=0, sticky=tk.W, padx=(12, 8), pady=12
+            row=0, column=0, sticky=tk.W, padx=(10, 8), pady=8
         )
         self.project_path_var = tk.StringVar(value=str(self.start_dir))
         ttk.Entry(top, textvariable=self.project_path_var).grid(
@@ -813,10 +822,10 @@ class ProgramPmApp(tk.Tk):
             "选择",
             self.choose_project_path,
             "选择要管理的现有项目目录。",
-        ).grid(row=0, column=2, padx=(0, 12))
+        ).grid(row=0, column=2, padx=(0, 10))
 
         status_panel = ttk.Frame(shell, style="Panel.TFrame")
-        status_panel.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 10))
+        status_panel.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
         for column in range(4):
             status_panel.columnconfigure(column, weight=1)
         self.repo_name_var = tk.StringVar(value=self.start_dir.name)
@@ -834,24 +843,26 @@ class ProgramPmApp(tk.Tk):
         self._make_metric(status_panel, 3, "工作区", self.worktree_state_var)
 
         left = ttk.Frame(shell, style="Panel.TFrame")
-        left.grid(row=2, column=0, sticky=tk.NSEW, padx=(0, 6))
+        left.grid(row=2, column=0, sticky=tk.NSEW, padx=(0, 5))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(2, weight=1)
+        left.rowconfigure(3, weight=1)
 
         right = ttk.Frame(shell, style="Panel.TFrame")
-        right.grid(row=2, column=1, sticky=tk.NSEW, padx=(6, 0))
+        right.grid(row=2, column=1, sticky=tk.NSEW, padx=(5, 0))
         right.columnconfigure(0, weight=1)
         right.rowconfigure(2, weight=1)
 
         ttk.Label(left, text="分支管理", style="Section.TLabel").grid(
-            row=0, column=0, sticky=tk.W, padx=12, pady=(12, 4)
+            row=0, column=0, sticky=tk.W, padx=10, pady=(10, 4)
         )
         branch_controls = ttk.Frame(left, style="Panel.TFrame")
-        branch_controls.grid(row=1, column=0, sticky=tk.EW, padx=12, pady=(4, 8))
+        branch_controls.grid(row=1, column=0, sticky=tk.EW, padx=10, pady=(2, 6))
+        branch_controls.columnconfigure(0, minsize=46)
         branch_controls.columnconfigure(1, weight=1)
+        branch_controls.columnconfigure(2, minsize=92)
         self.branch_select_var = tk.StringVar()
         ttk.Label(branch_controls, text="切换到", style="Panel.TLabel").grid(
-            row=0, column=0, sticky=tk.W
+            row=0, column=0, sticky=tk.E, padx=(0, 8), pady=2
         )
         self.branch_combo = ttk.Combobox(
             branch_controls,
@@ -859,27 +870,34 @@ class ProgramPmApp(tk.Tk):
             state="readonly",
             width=34,
         )
-        self.branch_combo.grid(row=0, column=1, sticky=tk.EW, padx=8)
+        self.branch_combo.grid(row=0, column=1, sticky=tk.EW, pady=2)
         self.make_button(
             branch_controls,
             "切换",
             self.checkout_selected_branch,
             "切换到列表中选中的本地或远端分支。",
-        ).grid(row=0, column=2)
+            width=10,
+        ).grid(row=0, column=2, sticky=tk.EW, padx=(8, 0), pady=2)
 
         self.new_branch_var = tk.StringVar()
         ttk.Label(branch_controls, text="新分支", style="Panel.TLabel").grid(
-            row=1, column=0, sticky=tk.W, pady=(8, 0)
+            row=1, column=0, sticky=tk.E, padx=(0, 8), pady=2
         )
         ttk.Entry(branch_controls, textvariable=self.new_branch_var).grid(
-            row=1, column=1, sticky=tk.EW, padx=8, pady=(8, 0)
+            row=1, column=1, sticky=tk.EW, pady=2
         )
         self.make_button(
             branch_controls,
             "创建并切换",
             self.create_branch,
             "从当前 HEAD 创建新分支并切换过去。",
-        ).grid(row=1, column=2, pady=(8, 0))
+            width=10,
+        ).grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=2)
+        ttk.Label(
+            left,
+            text="本地分支可直接切换；origin/* 是远端引用，切换时会创建或切到对应的本地跟踪分支。",
+            style="Muted.TLabel",
+        ).grid(row=2, column=0, sticky=tk.W, padx=10, pady=(0, 6))
 
         self.branch_tree = ttk.Treeview(
             left,
@@ -887,66 +905,93 @@ class ProgramPmApp(tk.Tk):
             show="headings",
             height=11,
         )
-        for column, heading, width in [
-            ("name", "分支", 170),
-            ("kind", "类型", 70),
-            ("upstream", "上游", 150),
-            ("commit", "提交", 80),
-            ("date", "日期", 90),
-            ("subject", "说明", 260),
+        for column, heading, width, stretch in [
+            ("name", "分支", 170, False),
+            ("kind", "类型", 58, False),
+            ("upstream", "上游", 150, False),
+            ("commit", "提交", 76, False),
+            ("date", "日期", 88, False),
+            ("subject", "说明", 300, True),
         ]:
             self.branch_tree.heading(column, text=heading)
-            self.branch_tree.column(column, width=width, anchor=tk.W)
-        self.branch_tree.grid(row=2, column=0, sticky=tk.NSEW, padx=12, pady=(0, 10))
+            self.branch_tree.column(
+                column,
+                width=width,
+                minwidth=width,
+                anchor=tk.W,
+                stretch=stretch,
+            )
+        branch_scroll_x = ttk.Scrollbar(left, orient=tk.HORIZONTAL, command=self.branch_tree.xview)
+        self.branch_tree.configure(xscrollcommand=branch_scroll_x.set)
+        self.branch_tree.grid(row=3, column=0, sticky=tk.NSEW, padx=10, pady=(0, 0))
+        branch_scroll_x.grid(row=4, column=0, sticky=tk.EW, padx=10, pady=(0, 8))
 
         git_actions = ttk.Frame(left, style="Panel.TFrame")
-        git_actions.grid(row=3, column=0, sticky=tk.EW, padx=12, pady=(0, 12))
-        for label, command, tooltip in [
+        git_actions.grid(row=5, column=0, sticky=tk.EW, padx=10, pady=(0, 10))
+        for column in range(3):
+            git_actions.columnconfigure(column, weight=1, uniform="left_actions")
+        for index, (label, command, tooltip) in enumerate([
             ("刷新", self.refresh_git_status_with_output, "重新读取分支、状态和 release 信息。"),
             ("检测远程", self.check_remote, "检查当前 origin 或仓库名对应的 GitHub SSH 443 远程。"),
             ("重置 Git", self.reset_git_config, "按当前仓库名重置 Git 身份、忽略规则和远程地址。"),
             ("获取", self.git_fetch, "从远程仓库获取最新分支信息，但不修改本地文件。"),
             ("拉取", self.git_pull, "从当前分支的上游或 origin 同名分支拉取更新。"),
-            ("推送当前分支", self.git_push, "先确认远程仓库可访问，再推送当前分支并设置上游。"),
             ("状态详情", self.git_status_detail, "显示当前分支、跟踪分支和文件改动列表。"),
-            ("最近提交", self.git_log, "显示最近 20 条提交记录。"),
-        ]:
-            self.make_button(git_actions, label, command, tooltip).pack(
-                side=tk.LEFT, padx=(0, 6), pady=3
+        ]):
+            self.make_button(git_actions, label, command, tooltip, width=9).grid(
+                row=index // 3,
+                column=index % 3,
+                sticky=tk.EW,
+                padx=(0 if index % 3 == 0 else 6, 0),
+                pady=(0 if index < 3 else 6, 0),
             )
 
         ttk.Label(right, text="提交与发布", style="Section.TLabel").grid(
-            row=0, column=0, sticky=tk.W, padx=12, pady=(12, 4)
+            row=0, column=0, sticky=tk.W, padx=10, pady=(10, 4)
         )
         commit_panel = ttk.Frame(right, style="Panel.TFrame")
-        commit_panel.grid(row=1, column=0, sticky=tk.EW, padx=12, pady=(4, 10))
+        commit_panel.grid(row=1, column=0, sticky=tk.EW, padx=10, pady=(2, 8))
+        commit_panel.columnconfigure(0, minsize=54)
         commit_panel.columnconfigure(1, weight=1)
-        ttk.Label(commit_panel, text="仓库名", style="Panel.TLabel").grid(row=0, column=0)
-        repo_entry = ttk.Entry(commit_panel, textvariable=self.repo_name_var, width=24)
-        repo_entry.grid(row=0, column=1, sticky=tk.EW, padx=8)
+        commit_panel.columnconfigure(2, minsize=54)
+        commit_panel.columnconfigure(3, weight=1)
+        ttk.Label(commit_panel, text="仓库名", style="Panel.TLabel").grid(
+            row=0, column=0, sticky=tk.E, padx=(0, 8), pady=3
+        )
+        repo_entry = ttk.Entry(commit_panel, textvariable=self.repo_name_var)
+        repo_entry.grid(row=0, column=1, sticky=tk.EW, pady=3)
         repo_entry.bind("<FocusOut>", lambda _event: self.refresh_git_status())
         repo_entry.bind("<Return>", lambda _event: self.refresh_git_status())
-        ttk.Label(commit_panel, text="新项目默认分支", style="Panel.TLabel").grid(
-            row=0, column=2, padx=(8, 0)
+        ttk.Label(commit_panel, text="默认分支", style="Panel.TLabel").grid(
+            row=0, column=2, sticky=tk.E, padx=(12, 8), pady=3
         )
-        ttk.Entry(commit_panel, textvariable=self.branch_var, width=14).grid(
-            row=0, column=3, padx=(8, 0)
+        ttk.Entry(commit_panel, textvariable=self.branch_var).grid(
+            row=0, column=3, sticky=tk.EW, pady=3
         )
         ttk.Label(commit_panel, text="提交信息", style="Panel.TLabel").grid(
-            row=1, column=0, pady=(8, 0)
+            row=1, column=0, sticky=tk.E, padx=(0, 8), pady=3
         )
         ttk.Entry(commit_panel, textvariable=self.commit_message_var).grid(
-            row=1, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(8, 0)
+            row=1, column=1, columnspan=3, sticky=tk.EW, pady=3
         )
-        self.make_button(commit_panel, "添加全部", self.git_add_all, "暂存当前项目所有改动。").grid(
-            row=2, column=2, sticky=tk.E, pady=(8, 0)
-        )
-        self.make_button(commit_panel, "提交", self.git_commit, "用上方提交信息创建本地提交。").grid(
-            row=2, column=3, sticky=tk.E, padx=(8, 0), pady=(8, 0)
-        )
+        commit_actions = ttk.Frame(commit_panel, style="Panel.TFrame")
+        commit_actions.grid(row=2, column=0, columnspan=4, sticky=tk.EW, pady=(8, 0))
+        for column in range(4):
+            commit_actions.columnconfigure(column, weight=1, uniform="commit_actions")
+        for column, (label, command, tooltip) in enumerate(
+            [
+                ("添加", self.git_add_all, "暂存当前项目所有改动。"),
+                ("提交", self.git_commit, "用上方提交信息创建本地提交。"),
+                ("推送", self.git_push, "先确认远程仓库可访问，再推送当前分支并设置上游。"),
+                ("记录", self.git_log, "显示最近 20 条提交记录。"),
+            ]
+        ):
+            self.make_button(commit_actions, label, command, tooltip).grid(
+                row=0, column=column, sticky=tk.EW, padx=(0 if column == 0 else 6, 0)
+            )
 
         release_panel = ttk.Frame(right, style="Panel.TFrame")
-        release_panel.grid(row=2, column=0, sticky=tk.NSEW, padx=12, pady=(0, 10))
+        release_panel.grid(row=2, column=0, sticky=tk.NSEW, padx=10, pady=(0, 8))
         release_panel.columnconfigure(0, weight=1)
         release_panel.rowconfigure(2, weight=1)
         ttk.Label(release_panel, text="Latest Release", style="Muted.TLabel").grid(
@@ -961,68 +1006,101 @@ class ProgramPmApp(tk.Tk):
             show="headings",
             height=8,
         )
-        for column, heading, width in [
-            ("title", "Release", 170),
-            ("status", "状态", 90),
-            ("tag", "Tag", 120),
-            ("published", "发布时间", 160),
-            ("source", "来源", 70),
+        for column, heading, width, stretch in [
+            ("title", "Release", 160, True),
+            ("status", "状态", 70, False),
+            ("tag", "Tag", 100, False),
+            ("published", "发布时间", 145, False),
+            ("source", "来源", 60, False),
         ]:
             self.release_tree.heading(column, text=heading)
-            self.release_tree.column(column, width=width, anchor=tk.W)
+            self.release_tree.column(
+                column,
+                width=width,
+                minwidth=width,
+                anchor=tk.W,
+                stretch=stretch,
+            )
+        release_scroll_y = ttk.Scrollbar(release_panel, orient=tk.VERTICAL, command=self.release_tree.yview)
+        release_scroll_x = ttk.Scrollbar(release_panel, orient=tk.HORIZONTAL, command=self.release_tree.xview)
+        self.release_tree.configure(
+            yscrollcommand=release_scroll_y.set,
+            xscrollcommand=release_scroll_x.set,
+        )
         self.release_tree.grid(row=2, column=0, sticky=tk.NSEW)
+        release_scroll_y.grid(row=2, column=1, sticky=tk.NS)
+        release_scroll_x.grid(row=3, column=0, sticky=tk.EW)
 
         release_form = ttk.Frame(right, style="Panel.TFrame")
-        release_form.grid(row=3, column=0, sticky=tk.EW, padx=12, pady=(0, 12))
+        release_form.grid(row=3, column=0, sticky=tk.EW, padx=10, pady=(0, 10))
+        release_form.columnconfigure(0, minsize=36)
         release_form.columnconfigure(1, weight=1)
+        release_form.columnconfigure(2, minsize=36)
+        release_form.columnconfigure(3, weight=1)
         self.release_tag_var = tk.StringVar(value="v1.0.0")
         self.release_title_var = tk.StringVar()
         self.release_notes_var = tk.StringVar()
+        self.release_assets_var = tk.StringVar()
         self.release_draft_var = tk.BooleanVar(value=False)
         self.release_prerelease_var = tk.BooleanVar(value=False)
-        ttk.Label(release_form, text="Tag", style="Panel.TLabel").grid(row=0, column=0)
-        ttk.Entry(release_form, textvariable=self.release_tag_var, width=16).grid(
-            row=0, column=1, sticky=tk.EW, padx=8
+        ttk.Label(release_form, text="Tag", style="Panel.TLabel").grid(
+            row=0, column=0, sticky=tk.E, padx=(0, 8), pady=3
         )
-        ttk.Label(release_form, text="标题", style="Panel.TLabel").grid(row=0, column=2)
-        ttk.Entry(release_form, textvariable=self.release_title_var, width=22).grid(
-            row=0, column=3, sticky=tk.EW, padx=(8, 0)
+        ttk.Entry(release_form, textvariable=self.release_tag_var).grid(
+            row=0, column=1, sticky=tk.EW, pady=3
+        )
+        ttk.Label(release_form, text="标题", style="Panel.TLabel").grid(
+            row=0, column=2, sticky=tk.E, padx=(12, 8), pady=3
+        )
+        ttk.Entry(release_form, textvariable=self.release_title_var).grid(
+            row=0, column=3, sticky=tk.EW, pady=3
         )
         ttk.Label(release_form, text="说明", style="Panel.TLabel").grid(
-            row=1, column=0, pady=(8, 0)
+            row=1, column=0, sticky=tk.E, padx=(0, 8), pady=3
         )
         ttk.Entry(release_form, textvariable=self.release_notes_var).grid(
-            row=1, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(8, 0)
+            row=1, column=1, columnspan=3, sticky=tk.EW, pady=3
         )
+        ttk.Label(release_form, text="资产", style="Panel.TLabel").grid(
+            row=2, column=0, sticky=tk.E, padx=(0, 8), pady=3
+        )
+        ttk.Entry(release_form, textvariable=self.release_assets_var).grid(
+            row=2, column=1, columnspan=2, sticky=tk.EW, pady=3
+        )
+        self.make_button(
+            release_form,
+            "选择文件",
+            self.choose_release_assets,
+            "选择要上传到 GitHub Release 的安装包、压缩包或其他附件。",
+            width=9,
+        ).grid(row=2, column=3, sticky=tk.EW, padx=(8, 0), pady=3)
         ttk.Checkbutton(
             release_form,
             text="Draft",
             variable=self.release_draft_var,
             style="Panel.TCheckbutton",
-        ).grid(row=2, column=1, sticky=tk.W, pady=(8, 0))
+        ).grid(row=3, column=1, sticky=tk.W, pady=(8, 0))
         ttk.Checkbutton(
             release_form,
             text="Prerelease",
             variable=self.release_prerelease_var,
             style="Panel.TCheckbutton",
-        ).grid(row=2, column=2, sticky=tk.W, pady=(8, 0))
+        ).grid(row=3, column=2, sticky=tk.W, pady=(8, 0))
         self.make_button(
             release_form,
             "发布 Release",
             self.create_release,
             "用 GitHub CLI 在当前分支或提交上创建 GitHub Release。",
-        ).grid(row=2, column=3, sticky=tk.E, pady=(8, 0))
+            width=9,
+        ).grid(row=3, column=3, sticky=tk.EW, pady=(8, 0))
 
         bottom = ttk.Frame(shell, style="Panel.TFrame")
-        bottom.grid(row=3, column=0, columnspan=2, sticky=tk.NSEW, pady=(10, 0))
+        bottom.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
         bottom.columnconfigure(0, weight=1)
-        bottom.rowconfigure(1, weight=1)
         self.status_var = tk.StringVar(value="未检测")
         ttk.Label(bottom, textvariable=self.status_var, style="Panel.TLabel").grid(
-            row=0, column=0, sticky=tk.EW, padx=12, pady=(10, 6)
+            row=0, column=0, sticky=tk.EW, padx=10, pady=8
         )
-        self.output = ScrolledText(bottom, height=8, wrap=tk.WORD)
-        self.output.grid(row=1, column=0, sticky=tk.NSEW, padx=12, pady=(0, 12))
 
     def _make_metric(
         self,
@@ -1306,6 +1384,14 @@ class ProgramPmApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def choose_release_assets(self) -> None:
+        filenames = filedialog.askopenfilenames(
+            initialdir=str(self.project_path()),
+            title="选择 Release 附件",
+        )
+        if filenames:
+            self.release_assets_var.set("; ".join(filenames))
+
     def create_release(self) -> None:
         path = self.project_path()
         repo_name = sanitize_project_name(self.repo_name_var.get() or path.name)
@@ -1313,6 +1399,11 @@ class ProgramPmApp(tk.Tk):
         tag = self.release_tag_var.get().strip()
         title = self.release_title_var.get().strip() or tag
         notes = self.release_notes_var.get().strip()
+        assets = [
+            item.strip()
+            for item in self.release_assets_var.get().split(";")
+            if item.strip()
+        ]
         if not tag:
             messagebox.showerror("发布失败", "请输入 release tag。")
             return
@@ -1340,6 +1431,7 @@ class ProgramPmApp(tk.Tk):
                 "release",
                 "create",
                 tag,
+                *assets,
                 "--repo",
                 repo,
                 "--target",
@@ -1370,26 +1462,41 @@ class ProgramPmApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def append_output(self, text: str) -> None:
-        self.output.insert(tk.END, text)
-        self.output.see(tk.END)
-
     def append_command_start(self, command_name: str) -> None:
-        self.enqueue(f"\n> {command_name}\n")
+        self.output_queue.put(("start", command_name))
 
     def append_command_done(self) -> None:
-        self.enqueue(">\n")
+        self.output_queue.put(("done", None))
 
     def enqueue(self, text: str) -> None:
-        self.output_queue.put(text)
+        self.output_queue.put(("text", text))
 
     def _poll_output(self) -> None:
         try:
             while True:
-                self.append_output(self.output_queue.get_nowait())
+                kind, text = self.output_queue.get_nowait()
+                if kind == "start":
+                    self.dialog_title = text or "操作结果"
+                    self.dialog_lines = []
+                elif kind == "text":
+                    if text:
+                        self.dialog_lines.append(text)
+                elif kind == "done":
+                    self.show_operation_dialog()
         except queue.Empty:
             pass
         self.after(100, self._poll_output)
+
+    def show_operation_dialog(self) -> None:
+        body = "".join(self.dialog_lines).strip() or "操作完成。"
+        self.status_var.set(body.splitlines()[0])
+        if "失败" in body or "已停止" in body or "[exit" in body:
+            messagebox.showerror(self.dialog_title, body)
+        elif "提示" in body or "警告" in body:
+            messagebox.showwarning(self.dialog_title, body)
+        else:
+            messagebox.showinfo(self.dialog_title, body)
+        self.dialog_lines = []
 
     def run_git_async(
         self,
