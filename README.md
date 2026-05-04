@@ -13,45 +13,15 @@ Windows Git 项目管理 GUI 工具，用于：
 
 ### 方式一：直接运行 .exe（推荐）
 
-打包后在 `dist/` 目录下生成 `GitManager.exe`，双击即可运行。
-
-```powershell
-.\dist\GitManager.exe
-```
+从 [Releases](https://github.com/powerfulhang/Program_PM/releases) 页面下载 `GitManager.exe`，双击即可运行。
 
 指定项目目录：
 
 ```powershell
-.\dist\GitManager.exe "F:\Working Files\Coding\MyProject"
+.\GitManager.exe "F:\Working Files\Coding\MyProject"
 ```
 
-### 方式二：通过 Python 运行（开发模式）
-
-```powershell
-.\.venv\Scripts\python.exe -m git_manager
-```
-
-或使用启动脚本：
-
-```powershell
-.\git-manager.cmd
-```
-
-### 方式三：右键菜单集成
-
-运行右键菜单安装脚本，之后在 Windows 资源管理器中右键文件夹空白处即可打开：
-
-```powershell
-.\scripts\install_context_menu.ps1
-```
-
-卸载右键菜单：
-
-```powershell
-.\scripts\uninstall_context_menu.ps1
-```
-
-### 方式四：安装到 PATH
+### 方式二：安装到 PATH
 
 运行安装脚本，将启动器加入 `%USERPROFILE%\bin` 并加入用户 PATH：
 
@@ -61,28 +31,16 @@ Windows Git 项目管理 GUI 工具，用于：
 
 安装后请新开一个 PowerShell 再运行 `git-manager`。
 
-## 打包为 .exe
-
-需要先安装 PyInstaller：
+### 方式三：通过 Python 运行（开发模式）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install pyinstaller
+.\.venv\Scripts\python.exe -m git_manager
 ```
 
-然后运行构建脚本：
+或使用启动脚本：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\build.py
-```
-
-生成的 `GitManager.exe` 位于 `dist/` 目录。
-
-## 清理旧版本
-
-如果之前安装过 Program PM 的旧版本启动器，运行清理脚本：
-
-```powershell
-.\scripts\cleanup_old_install.ps1
+.\git-manager.cmd
 ```
 
 ## GitHub 约定
