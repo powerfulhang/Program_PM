@@ -1,0 +1,938 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Git Manager Clickable UI Prototype</title>
+  <style>
+    :root {
+      --blue: #2563eb;
+      --blue-2: #1d4ed8;
+      --cyan: #0ea5e9;
+      --green: #16a34a;
+      --orange: #f59e0b;
+      --purple: #7c3aed;
+      --nav: #0f172a;
+      --nav-active: #334155;
+      --page: #ffffff;
+      --panel: #ffffff;
+      --soft: #f8fafc;
+      --line: #d9e1eb;
+      --line-2: #e8edf4;
+      --text: #111827;
+      --muted: #64748b;
+      --shadow: 0 18px 42px rgba(15, 23, 42, 0.13);
+      --radius: 5px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 50% 2%, rgba(37, 99, 235, 0.13), transparent 30%),
+        linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+      font-family: "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+      font-size: 13px;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .app {
+      width: min(1024px, calc(100vw - 48px));
+      height: min(660px, calc(100vh - 48px));
+      min-width: 960px;
+      min-height: 620px;
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid #aeb8c5;
+      border-radius: 7px;
+      box-shadow: var(--shadow);
+    }
+
+    .titlebar {
+      height: 30px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      background: #ffffff;
+      border-bottom: 1px solid #eef2f7;
+      user-select: none;
+      font-size: 12px;
+    }
+
+    .app-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 2px;
+      background:
+        linear-gradient(90deg, transparent 0 27%, #fff 27% 35%, transparent 35% 62%, #fff 62% 70%, transparent 70%),
+        linear-gradient(0deg, transparent 0 27%, #fff 27% 35%, transparent 35% 62%, #fff 62% 70%, transparent 70%),
+        #0ea5e9;
+      box-shadow: inset 0 0 0 1px rgba(14, 165, 233, 0.28);
+    }
+
+    .titlebar-spacer {
+      flex: 1;
+    }
+
+    .window-button {
+      width: 28px;
+      text-align: center;
+      color: #111827;
+      line-height: 1;
+    }
+
+    .shell {
+      height: calc(100% - 30px);
+      display: grid;
+      grid-template-columns: 64px 1fr;
+      grid-template-rows: 1fr 24px;
+      background: var(--page);
+    }
+
+    .sidebar {
+      grid-row: 1;
+      background: var(--nav);
+    }
+
+    .logo {
+      height: 68px;
+      display: grid;
+      place-items: center;
+      background: #fff;
+      color: #111827;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .nav-button {
+      width: 100%;
+      height: 56px;
+      display: grid;
+      grid-template-columns: 3px 1fr;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      color: #dbeafe;
+      background: var(--nav);
+      cursor: pointer;
+    }
+
+    .nav-button .rail {
+      background: transparent;
+    }
+
+    .nav-button .nav-body {
+      display: grid;
+      place-items: center;
+      align-content: center;
+      gap: 3px;
+      line-height: 1.1;
+    }
+
+    .nav-button .icon {
+      font-size: 19px;
+      line-height: 1;
+      color: #e2e8f0;
+    }
+
+    .nav-button .label {
+      font-size: 11px;
+    }
+
+    .nav-button:hover {
+      background: #1e293b;
+    }
+
+    .nav-button.active {
+      color: #38bdf8;
+      background: var(--nav-active);
+    }
+
+    .nav-button.active .rail {
+      background: var(--cyan);
+    }
+
+    .nav-button.active .icon {
+      color: #38bdf8;
+    }
+
+    .main {
+      grid-column: 2;
+      grid-row: 1;
+      display: grid;
+      grid-template-rows: 124px 1fr;
+      min-width: 0;
+      padding: 18px 16px 0;
+      background: #fff;
+    }
+
+    .header {
+      display: grid;
+      grid-template-columns: 1fr 52px;
+      column-gap: 9px;
+    }
+
+    .header h1 {
+      margin: 0 0 14px;
+      font-size: 22px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .path-label {
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .path-row {
+      height: 30px;
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 0 9px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .header-buttons {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+      padding-top: 44px;
+    }
+
+    .summary {
+      display: flex;
+      gap: 22px;
+      margin-top: 12px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .summary b {
+      font-weight: 800;
+    }
+
+    .page {
+      display: none;
+      min-height: 0;
+    }
+
+    .page.active {
+      display: grid;
+    }
+
+    .panel {
+      position: relative;
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px 12px 12px;
+    }
+
+    .panel::before {
+      content: attr(data-title);
+      position: absolute;
+      top: -9px;
+      left: 12px;
+      padding: 0 4px;
+      background: #fff;
+      color: #111827;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .field {
+      height: 29px;
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 0 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .field.placeholder {
+      color: #94a3b8;
+    }
+
+    .btn {
+      height: 31px;
+      min-width: 0;
+      border: 1px solid var(--blue);
+      border-radius: 3px;
+      color: var(--blue);
+      background: #fff;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: #eff6ff;
+    }
+
+    .btn.primary {
+      color: #fff;
+      background: linear-gradient(180deg, #2f74ee, var(--blue));
+      border-color: var(--blue);
+    }
+
+    .btn.primary:hover {
+      background: var(--blue-2);
+    }
+
+    .btn.success {
+      color: #fff;
+      background: var(--green);
+      border-color: var(--green);
+    }
+
+    .btn.success-outline {
+      color: var(--green);
+      border-color: #22c55e;
+      background: #fff;
+    }
+
+    .btn.purple {
+      color: var(--purple);
+      border-color: #a78bfa;
+      background: #fff;
+    }
+
+    .new-page {
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      padding-top: 2px;
+    }
+
+    .project-form {
+      display: grid;
+      grid-template-columns: 76px 1fr 52px;
+      gap: 10px 8px;
+      align-items: center;
+      margin-top: 2px;
+    }
+
+    .project-form .wide {
+      grid-column: 2 / 4;
+    }
+
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin: 16px 0 16px 76px;
+      font-size: 12px;
+    }
+
+    .checkbox {
+      width: 12px;
+      height: 12px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid #aeb8c5;
+      background: #fff;
+      color: #fff;
+      font-size: 9px;
+      line-height: 1;
+    }
+
+    .checkbox.checked {
+      border-color: var(--blue);
+      background: var(--blue);
+    }
+
+    .create-btn {
+      margin-left: 76px;
+      width: calc(100% - 76px);
+    }
+
+    .info-note {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      gap: 8px;
+      margin: 22px 2px 0;
+      color: #475569;
+      line-height: 1.55;
+      font-size: 12px;
+    }
+
+    .note-icon {
+      width: 14px;
+      height: 14px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #67a5b9;
+      border-radius: 50%;
+      color: #0f766e;
+      font-size: 10px;
+    }
+
+    .template-tools {
+      display: grid;
+      grid-template-columns: 58px 70px 58px;
+      gap: 10px;
+      justify-content: end;
+      margin-bottom: 12px;
+    }
+
+    .file-list {
+      height: calc(100% - 45px);
+      overflow: hidden;
+      padding: 0 2px 0 0;
+      border-right: 8px solid #d5dde7;
+    }
+
+    .file-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 24px;
+      font-size: 12px;
+    }
+
+    .overview-page {
+      grid-template-rows: 88px 97px 1fr;
+      gap: 9px;
+      padding-top: 2px;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .stat-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 11px 10px;
+      background: #fff;
+    }
+
+    .stat-icon {
+      height: 25px;
+      color: var(--blue);
+      font-size: 25px;
+      line-height: 1;
+    }
+
+    .stat-icon.good {
+      color: var(--green);
+    }
+
+    .stat-title {
+      color: #334155;
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .stat-value {
+      margin-top: 4px;
+      font-size: 16px;
+      font-weight: 800;
+    }
+
+    .stat-value.warn {
+      color: #f97316;
+    }
+
+    .overview-mid {
+      display: grid;
+      grid-template-columns: 1.05fr 0.72fr;
+      gap: 9px;
+    }
+
+    .repo-grid {
+      display: grid;
+      grid-template-columns: 56px 1fr 64px 1fr;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .repo-actions {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .quick-actions {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      align-items: center;
+      height: 100%;
+    }
+
+    .quick-actions .btn {
+      height: 40px;
+      font-weight: 800;
+    }
+
+    .workflow {
+      color: #334155;
+      line-height: 1.65;
+      font-size: 13px;
+      padding-top: 22px;
+    }
+
+    .branch-page {
+      grid-template-rows: 92px 1fr 33px;
+      gap: 9px;
+      padding-top: 2px;
+    }
+
+    .branch-form {
+      display: grid;
+      grid-template-columns: 54px 1fr 88px;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .branch-hint {
+      display: flex;
+      gap: 7px;
+      align-items: center;
+      margin-top: 10px;
+      color: #475569;
+      font-size: 11px;
+    }
+
+    .table-wrap {
+      height: 100%;
+      overflow: hidden;
+      border-right: 8px solid #d5dde7;
+      border-bottom: 8px solid #d5dde7;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 11px;
+    }
+
+    th,
+    td {
+      height: 25px;
+      border: 1px solid var(--line-2);
+      padding: 0 7px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: left;
+    }
+
+    th {
+      background: #eef2f7;
+      font-weight: 800;
+    }
+
+    .bottom-actions {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 9px;
+    }
+
+    .commit-page {
+      grid-template-rows: 64px 64px 1fr;
+      gap: 9px;
+      padding-top: 2px;
+    }
+
+    .commit-form {
+      display: grid;
+      grid-template-columns: 72px 1fr 78px 78px;
+      gap: 8px;
+      align-items: center;
+      height: 100%;
+    }
+
+    .sync-actions {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 46px;
+      align-items: center;
+      height: 100%;
+      padding: 0 44px;
+    }
+
+    .log-list {
+      height: calc(100% - 36px);
+      overflow: hidden;
+      padding: 6px 8px;
+      border-right: 8px solid #d5dde7;
+      font-family: "Consolas", "Microsoft YaHei UI", monospace;
+      font-size: 12px;
+      line-height: 23px;
+    }
+
+    .release-page {
+      grid-template-rows: 132px 1fr;
+      gap: 9px;
+      padding-top: 2px;
+    }
+
+    .latest {
+      margin-bottom: 7px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .release-table {
+      height: 72px;
+      overflow: hidden;
+      border-bottom: 8px solid #d5dde7;
+    }
+
+    .release-form {
+      display: grid;
+      grid-template-columns: 48px 1fr 48px 1fr 66px;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .release-form .notes {
+      grid-column: 2 / 6;
+    }
+
+    .release-form .asset {
+      grid-column: 2 / 5;
+    }
+
+    .release-options {
+      grid-column: 2 / 4;
+      display: flex;
+      gap: 52px;
+      align-items: center;
+    }
+
+    .statusbar {
+      grid-column: 1 / 3;
+      grid-row: 2;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      padding: 0 14px;
+      border-top: 1px solid #e2e8f0;
+      background: #fff;
+      color: #1f2937;
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .statusbar b {
+      font-weight: 800;
+    }
+
+    .toast {
+      position: absolute;
+      right: 24px;
+      bottom: 38px;
+      max-width: 320px;
+      padding: 10px 12px;
+      color: #0f172a;
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+      opacity: 0;
+      transform: translateY(10px);
+      pointer-events: none;
+      transition: opacity 160ms ease, transform 160ms ease;
+      font-size: 12px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 1040px), (max-height: 700px) {
+      body {
+        place-items: start center;
+        padding: 12px;
+      }
+
+      .app {
+        transform-origin: top center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" aria-label="Git Manager clickable prototype">
+    <div class="titlebar">
+      <span class="app-icon" aria-hidden="true"></span>
+      <span>Git Manager</span>
+      <span class="titlebar-spacer"></span>
+      <span class="window-button">－</span>
+      <span class="window-button">□</span>
+      <span class="window-button">×</span>
+    </div>
+
+    <div class="shell">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="logo">GM</div>
+        <button class="nav-button active" type="button" data-page="new">
+          <span class="rail"></span><span class="nav-body"><span class="icon">＋</span><span class="label">新建</span></span>
+        </button>
+        <button class="nav-button" type="button" data-page="overview">
+          <span class="rail"></span><span class="nav-body"><span class="icon">▦</span><span class="label">概览</span></span>
+        </button>
+        <button class="nav-button" type="button" data-page="branch">
+          <span class="rail"></span><span class="nav-body"><span class="icon">⑂</span><span class="label">分支</span></span>
+        </button>
+        <button class="nav-button" type="button" data-page="commit">
+          <span class="rail"></span><span class="nav-body"><span class="icon">↻</span><span class="label">提交</span></span>
+        </button>
+        <button class="nav-button" type="button" data-page="release">
+          <span class="rail"></span><span class="nav-body"><span class="icon">◇</span><span class="label">发布</span></span>
+        </button>
+      </aside>
+
+      <main class="main">
+        <header class="header">
+          <div>
+            <h1>Git Manager</h1>
+            <div class="path-label">项目路径</div>
+            <div class="path-row">F:\Working Files\Coding\Program_PM</div>
+            <div class="summary">
+              <span><b>仓库: Program_PM</b></span>
+              <span>分支: master</span>
+              <span>同步: 已同步</span>
+            </div>
+          </div>
+          <div class="header-buttons">
+            <button class="btn" type="button" data-action="选择项目路径">选择</button>
+            <button class="btn" type="button" data-action="刷新项目状态">刷新</button>
+          </div>
+        </header>
+
+        <section class="page new-page active" data-page-panel="new" aria-label="新建项目页面">
+          <div class="panel" data-title="项目信息">
+            <div class="project-form">
+              <span>创建位置</span>
+              <div class="field">F:\Working Files\Coding\Program_PM</div>
+              <button class="btn" type="button" data-action="浏览创建位置">浏览</button>
+              <span>项目名称</span>
+              <div class="field wide">Program_PM</div>
+            </div>
+            <div class="check"><span class="checkbox"></span><span>创建后初始化 Git 仓库</span></div>
+            <button class="btn primary create-btn" type="button" data-action="创建项目">创建项目</button>
+            <div class="info-note">
+              <span class="note-icon">i</span>
+              <span>模板文件会复制到新项目目录中；复制后不再跟随源模板自动更新。</span>
+            </div>
+          </div>
+          <div class="panel" data-title="模板文件 (ModuleFiles)">
+            <div class="template-tools">
+              <button class="btn" type="button" data-action="全选模板">全选</button>
+              <button class="btn" type="button" data-action="全不选模板">全不选</button>
+              <button class="btn" type="button" data-action="刷新模板列表">刷新</button>
+            </div>
+            <div class="file-list">
+              <div class="file-row"><span class="checkbox checked">✓</span>.gitattributes</div>
+              <div class="file-row"><span class="checkbox checked">✓</span>.gitignore</div>
+              <div class="file-row"><span class="checkbox checked">✓</span>AGENTS.md</div>
+              <div class="file-row"><span class="checkbox checked">✓</span>README.md</div>
+              <div class="file-row"><span class="checkbox checked">✓</span>CHANGELOG.md</div>
+              <div class="file-row"><span class="checkbox checked">✓</span>CODE_OF_CONDUCT.md</div>
+              <div class="file-row"><span class="checkbox checked">✓</span>CONTRIBUTING.md</div>
+              <div class="file-row"><span class="checkbox checked">✓</span>LICENSE</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="page overview-page" data-page-panel="overview" aria-label="概览页面">
+          <div class="stat-grid">
+            <div class="stat-card"><div class="stat-icon">⑂</div><div class="stat-title">当前分支</div><div class="stat-value">master</div></div>
+            <div class="stat-card"><div class="stat-icon">↕</div><div class="stat-title">上游分支</div><div class="stat-value">origin/master</div></div>
+            <div class="stat-card"><div class="stat-icon good">○</div><div class="stat-title">同步状态</div><div class="stat-value">已同步</div></div>
+            <div class="stat-card"><div class="stat-icon">□</div><div class="stat-title">工作区</div><div class="stat-value warn">14 项改动</div></div>
+          </div>
+          <div class="overview-mid">
+            <div class="panel" data-title="仓库配置">
+              <div class="repo-grid">
+                <span>仓库名</span><div class="field">Program_PM</div>
+                <span>默认分支</span><div class="field">master</div>
+              </div>
+              <div class="repo-actions">
+                <button class="btn" type="button" data-action="刷新仓库配置">刷新</button>
+                <button class="btn" type="button" data-action="检测远程">检测远程</button>
+                <button class="btn" type="button" data-action="重置 Git">重置 Git</button>
+                <button class="btn" type="button" data-action="查看状态详情">状态详情</button>
+              </div>
+            </div>
+            <div class="panel" data-title="快捷入口">
+              <div class="quick-actions">
+                <button class="btn" type="button" data-target-page="branch">⑂ 分支管理</button>
+                <button class="btn success-outline" type="button" data-target-page="commit">↻ 提交同步</button>
+                <button class="btn purple" type="button" data-target-page="release">◇ 版本发布</button>
+              </div>
+            </div>
+          </div>
+          <div class="panel workflow" data-title="工作流提示">
+            概览页只展示仓库整体状态和常用入口。具体操作请进入左侧菜单：新建项目负责模板复制和初始化；分支页负责切换/创建分支；提交页负责暂存、提交、同步和历史；发布页负责 GitHub Release 与资产上传。
+          </div>
+        </section>
+
+        <section class="page branch-page" data-page-panel="branch" aria-label="分支页面">
+          <div class="panel" data-title="分支操作">
+            <div class="branch-form">
+              <span>切换到</span>
+              <div class="field">master</div>
+              <button class="btn primary" type="button" data-action="切换分支">切换</button>
+              <span>新分支</span>
+              <div class="field placeholder">输入新分支名</div>
+              <button class="btn primary" type="button" data-action="创建并切换分支">创建并切换</button>
+            </div>
+            <div class="branch-hint"><span class="note-icon">i</span><span>本地分支可直接切换；origin/* 是远端引用，切换时会创建或切到对应的本地跟踪分支。</span></div>
+          </div>
+          <div class="panel" data-title="分支列表">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th style="width: 25%">分支</th><th style="width: 12%">类型</th><th style="width: 22%">上游</th><th style="width: 14%">提交</th><th style="width: 15%">日期</th><th>说明</th></tr></thead>
+                <tbody>
+                  <tr><td>* master</td><td>本地</td><td>origin/master</td><td>0fb8fb4</td><td>2026-05-02</td><td>Update proj...</td></tr>
+                  <tr><td>origin/master</td><td>远端</td><td></td><td>0fb8fb4</td><td>2026-05-02</td><td>Update proj...</td></tr>
+                  <tr><td>main</td><td>本地</td><td>origin/main</td><td>2d8e8e1</td><td>2026-05-02</td><td>Update proj...</td></tr>
+                  <tr><td>origin/main</td><td>远端</td><td>origin/main</td><td>2d8e8e1</td><td>2026-05-02</td><td>Update proj...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="bottom-actions">
+            <button class="btn" type="button" data-action="获取远程">获取远程</button>
+            <button class="btn" type="button" data-action="检测远程">检测远程</button>
+            <button class="btn" type="button" data-action="重置 Git">重置 Git</button>
+            <button class="btn" type="button" data-action="状态详情">状态详情</button>
+          </div>
+        </section>
+
+        <section class="page commit-page" data-page-panel="commit" aria-label="提交页面">
+          <div class="panel" data-title="提交">
+            <div class="commit-form">
+              <span>提交信息</span>
+              <div class="field">Update project</div>
+              <button class="btn" type="button" data-action="添加全部">添加全部</button>
+              <button class="btn primary" type="button" data-action="提交">提交</button>
+            </div>
+          </div>
+          <div class="panel" data-title="同步">
+            <div class="sync-actions">
+              <button class="btn success" type="button" data-action="推送">推送</button>
+              <button class="btn" type="button" data-action="拉取">拉取</button>
+              <button class="btn" type="button" data-action="获取">获取</button>
+            </div>
+          </div>
+          <div class="panel" data-title="提交历史 / 操作记录">
+            <div class="log-list">
+              • 0fb8fb4 &nbsp;&nbsp; 2026-05-02 &nbsp;&nbsp; Update project<br>
+              • 2d8e8e1 &nbsp;&nbsp; 2026-05-02 &nbsp;&nbsp; Update project<br>
+              • 76fa26d &nbsp;&nbsp; 2026-05-02 &nbsp;&nbsp; Improve help menu and documentation<br>
+              • a1b2c3d &nbsp;&nbsp; 2026-04-30 &nbsp;&nbsp; Initial commit
+            </div>
+            <button class="btn" type="button" style="width: 80px; margin-top: 8px;" data-action="刷新日志">刷新日志</button>
+          </div>
+        </section>
+
+        <section class="page release-page" data-page-panel="release" aria-label="发布页面">
+          <div class="panel" data-title="Release 列表">
+            <div class="latest">Latest Release: v1.0.0 | Latest</div>
+            <div class="release-table">
+              <table>
+                <thead><tr><th>Release</th><th>状态</th><th>Tag</th><th>发布时间</th><th>来源</th></tr></thead>
+                <tbody><tr><td>Calculator v1.0.0</td><td>Latest</td><td>v1.0.0</td><td>2026-05-02 01:58:31</td><td>GitHub</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel" data-title="创建 Release">
+            <div class="release-form">
+              <span>Tag</span><div class="field">v1.0.0</div>
+              <span>标题</span><div class="field">Calculator v1.0.0</div><span></span>
+              <span>说明</span><div class="field notes">Update project</div>
+              <span>资产</span><div class="field asset">F:\Working Files\Coding\Program_PM\dist\Program_PM.zip</div><button class="btn" type="button" data-action="浏览资产">浏览</button>
+              <span></span><div class="release-options"><span>□ Draft</span><span>□ Prerelease</span></div><button class="btn primary" type="button" data-action="发布 Release">发布 Release</button>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <b>Git 本地状态</b>
+        <span>| 分支: master | origin: ssh://git@ssh.github.com:443/powerfulhang/Program_PM.git</span>
+      </footer>
+    </div>
+
+    <div class="toast" role="status" aria-live="polite"></div>
+  </div>
+
+  <script>
+    const navButtons = [...document.querySelectorAll(".nav-button")];
+    const pages = [...document.querySelectorAll("[data-page-panel]")];
+    const toast = document.querySelector(".toast");
+
+    function showPage(pageName) {
+      navButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.page === pageName);
+      });
+      pages.forEach((page) => {
+        page.classList.toggle("active", page.dataset.pagePanel === pageName);
+      });
+    }
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add("show");
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => {
+        toast.classList.remove("show");
+      }, 1300);
+    }
+
+    navButtons.forEach((button) => {
+      button.addEventListener("click", () => showPage(button.dataset.page));
+    });
+
+    document.querySelectorAll("[data-target-page]").forEach((button) => {
+      button.addEventListener("click", () => showPage(button.dataset.targetPage));
+    });
+
+    document.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", () => showToast(`${button.dataset.action}：静态原型中仅展示交互效果`));
+    });
+  </script>
+</body>
+</html>

@@ -7,6 +7,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from dataclasses import dataclass
@@ -14,6 +15,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 from urllib.parse import urlparse
+
+import ttkbootstrap as ttkb
+from ttkbootstrap.constants import *
 
 
 MODULEFILES_DIR = Path(r"F:\Working Files\Coding\ModuleFiles")
@@ -25,6 +29,19 @@ AUTO_GENERATED_CONFIG_FILES = [".gitignore", ".gitattributes"]
 GH_CANDIDATES = [
     Path(r"C:\tmp\gh_2.92.0_windows_amd64\bin\gh.exe"),
 ]
+
+WINDOW_SIZE = (1024, 660)
+WINDOW_MIN_SIZE = (980, 620)
+SIDEBAR_WIDTH = 72
+STATUS_MAX_CHARS = 135
+NAV_ITEMS = [
+    ("＋", "新建"),
+    ("▦", "概览"),
+    ("⑂", "分支"),
+    ("✓", "提交"),
+    ("◇", "发布"),
+]
+NAV_MAP = {"新建": "新建项目", "概览": "概览", "分支": "分支", "提交": "提交", "发布": "发布"}
 
 
 @dataclass
@@ -70,6 +87,7 @@ def run_command(command: list[str], cwd: Path, timeout: int = 60) -> CommandResu
             capture_output=True,
             text=True,
             timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except FileNotFoundError as exc:
         return CommandResult(command, 127, "", str(exc))
@@ -546,7 +564,7 @@ def backup_first_pull_conflicts(project_path: Path, branch: str) -> list[Path]:
         return []
 
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_root = project_path / ".git" / "program-pm-backups"
+    backup_root = project_path / ".git" / "git-manager-backups"
     backup_dir = backup_root / f"first-pull-{stamp}"
     backup_dir.mkdir(parents=True, exist_ok=True)
     backups: list[Path] = []
@@ -645,189 +663,23 @@ class Tooltip:
             self.tip_window = None
 
 
-class ProgramPmApp(tk.Tk):
+class GitManagerApp(ttkb.Window):
     def __init__(self, start_dir: Path) -> None:
-        super().__init__()
-        self.title("Program PM")
-        self.geometry("1060x700")
-        self.minsize(1060, 700)
-        self.maxsize(1060, 700)
-        self.resizable(False, False)
+        super().__init__(title="Git Manager", themename="cosmo", size=WINDOW_SIZE)
+        self.minsize(*WINDOW_MIN_SIZE)
+        self.configure(background="#f8fafc")
         self.start_dir = start_dir
         self.output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
         self.dialog_title = "操作结果"
         self.dialog_lines: list[str] = []
         self.module_vars: dict[Path, tk.BooleanVar] = {}
+        self._current_view = ""
+        self._views: dict[str, ttk.Frame] = {}
+        self._nav_buttons: dict[str, tk.Button] = {}
+        self._nav_indicators: dict[str, tk.Frame] = {}
 
-        self._configure_style()
-        self._build_ui()
-        self._load_module_files()
-        self._poll_output()
-        self.refresh_git_status()
-
-    def add_tooltip(self, widget: tk.Widget, text: str) -> None:
-        Tooltip(widget, text)
-
-    def make_button(
-        self,
-        parent: tk.Widget,
-        text: str,
-        command: Callable[[], None],
-        tooltip: str,
-        width: int | None = None,
-    ) -> ttk.Button:
-        options = {"text": text, "command": command}
-        if width is not None:
-            options["width"] = width
-        button = ttk.Button(parent, **options)
-        self.add_tooltip(button, tooltip)
-        return button
-
-    def _configure_style(self) -> None:
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        self.configure(background="#f6f7f9")
-        style.configure("TFrame", background="#f6f7f9")
-        style.configure("Panel.TFrame", background="#ffffff", relief=tk.FLAT)
-        style.configure("TLabel", background="#f6f7f9", foreground="#1f2937")
-        style.configure("Panel.TLabel", background="#ffffff", foreground="#1f2937")
-        style.configure(
-            "Section.TLabel",
-            background="#ffffff",
-            foreground="#111827",
-            font=("Microsoft YaHei UI", 10, "bold"),
-        )
-        style.configure(
-            "Muted.TLabel",
-            background="#ffffff",
-            foreground="#6b7280",
-            font=("Microsoft YaHei UI", 9),
-        )
-        style.configure("TButton", padding=(7, 4))
-        style.configure("Accent.TButton", padding=(9, 5))
-        style.configure("TEntry", padding=(4, 3))
-        style.configure("TCombobox", padding=(4, 3))
-        style.configure("Panel.TCheckbutton", background="#ffffff", foreground="#1f2937")
-        style.configure("Treeview", rowheight=26, fieldbackground="#ffffff")
-        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"))
-
-    def _build_ui(self) -> None:
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        self.new_project_tab = ttk.Frame(notebook)
-        self.git_tab = ttk.Frame(notebook)
-        notebook.add(self.new_project_tab, text="新建项目")
-        notebook.add(self.git_tab, text="项目管理")
-
-        self._build_new_project_tab()
-        self._build_git_tab()
-
-    def _build_new_project_tab(self) -> None:
-        top = ttk.Frame(self.new_project_tab)
-        top.pack(fill=tk.X, padx=10, pady=10)
-
-        ttk.Label(top, text="创建位置").grid(row=0, column=0, sticky=tk.W)
-        self.create_base_var = tk.StringVar(value=str(self.start_dir))
-        ttk.Entry(top, textvariable=self.create_base_var).grid(
-            row=0, column=1, sticky=tk.EW, padx=8
-        )
-        self.make_button(
-            top,
-            "选择",
-            self.choose_create_base,
-            "选择新项目要创建在哪个目录下。",
-        ).grid(row=0, column=2)
-
-        ttk.Label(top, text="项目名称").grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
-        self.project_name_var = tk.StringVar()
-        ttk.Entry(top, textvariable=self.project_name_var).grid(
-            row=1, column=1, sticky=tk.EW, padx=8, pady=(8, 0)
-        )
-        self.init_git_on_create_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            top,
-            text="创建后初始化 Git（生成 .gitignore、设置身份、设置 443 远程）",
-            variable=self.init_git_on_create_var,
-        ).grid(row=2, column=1, sticky=tk.W, padx=8, pady=(8, 0))
-        top.columnconfigure(1, weight=1)
-
-        actions = ttk.Frame(self.new_project_tab)
-        actions.pack(fill=tk.X, padx=10)
-        self.make_button(
-            actions,
-            "全选",
-            self.select_all_modules,
-            "勾选所有 ModuleFiles。未勾选任何文件时，创建项目时不会拷贝任何文件。",
-        ).pack(side=tk.LEFT)
-        self.make_button(
-            actions,
-            "全不选",
-            self.clear_modules,
-            "清空当前勾选。",
-        ).pack(side=tk.LEFT, padx=8)
-        self.make_button(
-            actions,
-            "刷新 ModuleFiles",
-            self._load_module_files,
-            f"重新扫描 {MODULEFILES_DIR} 下的模板文件。",
-        ).pack(side=tk.LEFT)
-        self.make_button(
-            actions,
-            "创建项目",
-            self.create_project,
-            "在创建位置下新建项目目录，拷贝选中的 ModuleFiles 模板文件，并可同步初始化 Git。",
-        ).pack(side=tk.RIGHT)
-
-        list_frame = ttk.LabelFrame(self.new_project_tab, text="ModuleFiles")
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        self.module_canvas = tk.Canvas(list_frame, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(
-            list_frame, orient=tk.VERTICAL, command=self.module_canvas.yview
-        )
-        self.module_inner = ttk.Frame(self.module_canvas)
-        self.module_inner.bind(
-            "<Configure>",
-            lambda _event: self.module_canvas.configure(
-                scrollregion=self.module_canvas.bbox("all")
-            ),
-        )
-        self.module_canvas.create_window((0, 0), window=self.module_inner, anchor=tk.NW)
-        self.module_canvas.configure(yscrollcommand=scrollbar.set)
-        self.module_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-    def _build_git_tab(self) -> None:
-        shell = ttk.Frame(self.git_tab)
-        shell.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        shell.columnconfigure(0, weight=1, uniform="main_panels")
-        shell.columnconfigure(1, weight=1, uniform="main_panels")
-        shell.rowconfigure(2, weight=1)
-
-        top = ttk.Frame(shell, style="Panel.TFrame")
-        top.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
-        top.columnconfigure(1, weight=1)
-        ttk.Label(top, text="项目路径", style="Panel.TLabel").grid(
-            row=0, column=0, sticky=tk.W, padx=(10, 8), pady=8
-        )
+        # Shared variables
         self.project_path_var = tk.StringVar(value=str(self.start_dir))
-        ttk.Entry(top, textvariable=self.project_path_var).grid(
-            row=0, column=1, sticky=tk.EW, padx=8
-        )
-        self.make_button(
-            top,
-            "选择",
-            self.choose_project_path,
-            "选择要管理的现有项目目录。",
-        ).grid(row=0, column=2, padx=(0, 10))
-
-        status_panel = ttk.Frame(shell, style="Panel.TFrame")
-        status_panel.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
-        for column in range(4):
-            status_panel.columnconfigure(column, weight=1)
         self.repo_name_var = tk.StringVar(value=self.start_dir.name)
         self.branch_var = tk.StringVar(value=DEFAULT_BRANCH)
         self.commit_message_var = tk.StringVar(value="Update project")
@@ -836,74 +688,453 @@ class ProgramPmApp(tk.Tk):
         self.sync_state_var = tk.StringVar(value="-")
         self.worktree_state_var = tk.StringVar(value="-")
         self.latest_release_var = tk.StringVar(value="-")
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_display_var = tk.StringVar(value="Ready")
+        self.status_var.trace_add("write", self._sync_status_display)
 
-        self._make_metric(status_panel, 0, "当前分支", self.current_branch_var)
-        self._make_metric(status_panel, 1, "上游分支", self.upstream_var)
-        self._make_metric(status_panel, 2, "同步状态", self.sync_state_var)
-        self._make_metric(status_panel, 3, "工作区", self.worktree_state_var)
+        self._build_ui()
+        self._load_module_files()
+        self._poll_output()
+        self.refresh_git_status()
+        self._show_view("概览")
 
-        left = ttk.Frame(shell, style="Panel.TFrame")
-        left.grid(row=2, column=0, sticky=tk.NSEW, padx=(0, 5))
-        left.columnconfigure(0, weight=1)
-        left.rowconfigure(3, weight=1)
+    def add_tooltip(self, widget: tk.Widget, text: str) -> None:
+        Tooltip(widget, text)
 
-        right = ttk.Frame(shell, style="Panel.TFrame")
-        right.grid(row=2, column=1, sticky=tk.NSEW, padx=(5, 0))
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(2, weight=1)
+    def _build_ui(self) -> None:
+        shell = ttk.Frame(self)
+        shell.pack(fill=BOTH, expand=True)
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
 
-        ttk.Label(left, text="分支管理", style="Section.TLabel").grid(
-            row=0, column=0, sticky=tk.W, padx=10, pady=(10, 4)
-        )
-        branch_controls = ttk.Frame(left, style="Panel.TFrame")
-        branch_controls.grid(row=1, column=0, sticky=tk.EW, padx=10, pady=(2, 6))
-        branch_controls.columnconfigure(0, minsize=46)
-        branch_controls.columnconfigure(1, weight=1)
-        branch_controls.columnconfigure(2, minsize=92)
-        self.branch_select_var = tk.StringVar()
-        ttk.Label(branch_controls, text="切换到", style="Panel.TLabel").grid(
-            row=0, column=0, sticky=tk.E, padx=(0, 8), pady=2
-        )
-        self.branch_combo = ttk.Combobox(
-            branch_controls,
-            textvariable=self.branch_select_var,
-            state="readonly",
-            width=34,
-        )
-        self.branch_combo.grid(row=0, column=1, sticky=tk.EW, pady=2)
-        self.make_button(
-            branch_controls,
-            "切换",
-            self.checkout_selected_branch,
-            "切换到列表中选中的本地或远端分支。",
-            width=10,
-        ).grid(row=0, column=2, sticky=tk.EW, padx=(8, 0), pady=2)
+        # Main container
+        main = ttk.Frame(shell)
+        main.grid(row=0, column=0, sticky=NSEW)
 
-        self.new_branch_var = tk.StringVar()
-        ttk.Label(branch_controls, text="新分支", style="Panel.TLabel").grid(
-            row=1, column=0, sticky=tk.E, padx=(0, 8), pady=2
+        # Sidebar
+        self._build_sidebar(main)
+
+        # Content area (right side)
+        content = ttk.Frame(main)
+        content.pack(side=LEFT, fill=BOTH, expand=True)
+
+        # Header bar
+        self._build_header(content)
+
+        # View frames
+        views_container = ttk.Frame(content)
+        views_container.pack(fill=BOTH, expand=True)
+
+        self._views["新建项目"] = self._build_new_project_view(views_container)
+        self._views["概览"] = self._build_overview_view(views_container)
+        self._views["分支"] = self._build_branches_view(views_container)
+        self._views["提交"] = self._build_commits_view(views_container)
+        self._views["发布"] = self._build_releases_view(views_container)
+
+        for frame in self._views.values():
+            frame.place(relwidth=1, relheight=1)
+
+        # Status bar spans the full app width, matching the concept layout.
+        self._build_status_bar(shell)
+
+    def _build_sidebar(self, parent: ttk.Frame) -> None:
+        sidebar = tk.Frame(parent, bg="#0f172a", width=SIDEBAR_WIDTH)
+        sidebar.pack(side=LEFT, fill=Y)
+        sidebar.pack_propagate(False)
+
+        # Logo
+        logo_frame = tk.Frame(sidebar, bg="#ffffff", height=68)
+        logo_frame.pack(fill=X)
+        logo_frame.pack_propagate(False)
+        logo = tk.Label(
+            logo_frame, text="GM", bg="#ffffff", fg="#111827",
+            font=("Segoe UI", 15, "bold"),
         )
-        ttk.Entry(branch_controls, textvariable=self.new_branch_var).grid(
-            row=1, column=1, sticky=tk.EW, pady=2
-        )
-        self.make_button(
-            branch_controls,
-            "创建并切换",
-            self.create_branch,
-            "从当前 HEAD 创建新分支并切换过去。",
-            width=10,
-        ).grid(row=1, column=2, sticky=tk.EW, padx=(8, 0), pady=2)
+        logo.pack(expand=True)
+
+        nav_frame = tk.Frame(sidebar, bg="#1e293b")
+        nav_frame.pack(fill=BOTH, expand=True)
+
+        for icon, label in NAV_ITEMS:
+            row = tk.Frame(nav_frame, bg="#1e293b")
+            row.pack(fill=X)
+            row.grid_columnconfigure(1, weight=1)
+
+            # Left accent indicator bar
+            indicator = tk.Frame(row, bg="#1e293b", width=3)
+            indicator.grid(row=0, column=0, sticky=NS)
+            self._nav_indicators[label] = indicator
+
+            btn = tk.Button(
+                row,
+                text=f"{icon}\n{label}",
+                bg="#1e293b",
+                fg="#94a3b8",
+                activebackground="#334155",
+                activeforeground="#38bdf8",
+                font=("Microsoft YaHei UI", 9),
+                relief=FLAT,
+                anchor=CENTER,
+                padx=2,
+                pady=7,
+                cursor="hand2",
+                command=lambda l=label: self._show_view(l),
+            )
+            btn.grid(row=0, column=1, sticky=NSEW)
+            row.configure(height=58)
+            row.grid_propagate(False)
+            self._nav_buttons[label] = btn
+            btn.bind("<Enter>", lambda e, b=btn, l=label: self._on_nav_hover(b, l, True))
+            btn.bind("<Leave>", lambda e, b=btn, l=label: self._on_nav_hover(b, l, False))
+
+    def _on_nav_hover(self, btn: tk.Button, label: str, entering: bool) -> None:
+        if self._current_view == label:
+            return
+        btn.configure(fg="#e2e8f0" if entering else "#94a3b8")
+
+    def _show_view(self, nav_label: str) -> None:
+        view_name = NAV_MAP.get(nav_label, nav_label)
+        # Update sidebar highlighting with accent bar
+        for label, btn in self._nav_buttons.items():
+            indicator = self._nav_indicators[label]
+            if label == nav_label:
+                btn.configure(bg="#334155", fg="#38bdf8")
+                indicator.configure(bg="#38bdf8")
+            else:
+                btn.configure(bg="#1e293b", fg="#94a3b8")
+                indicator.configure(bg="#1e293b")
+
+        # Show selected view
+        for label, frame in self._views.items():
+            if label == view_name:
+                frame.lift()
+        self._current_view = nav_label
+
+    def _sync_status_display(self, *_args: object) -> None:
+        text = " ".join(self.status_var.get().split())
+        if len(text) > STATUS_MAX_CHARS:
+            text = text[: STATUS_MAX_CHARS - 1].rstrip() + "..."
+        self.status_display_var.set(text or "Ready")
+
+    def _build_header(self, parent: ttk.Frame) -> None:
+        header = ttk.Frame(parent, padding=(16, 12, 16, 8))
+        header.pack(fill=X)
+        header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, minsize=58)
+
+        # Row 1: path + browse
+        path_row = ttk.Frame(header)
+        path_row.grid(row=0, column=0, sticky=EW)
+        path_row.columnconfigure(0, weight=1)
         ttk.Label(
-            left,
+            path_row,
+            text="Git Manager",
+            font=("Segoe UI", 15, "bold"),
+        ).grid(row=0, column=0, sticky=W)
+        ttk.Label(path_row, text="项目路径", font=("Microsoft YaHei UI", 9), foreground="#64748b").grid(row=1, column=0, sticky=W, pady=(8, 0))
+        ttk.Entry(path_row, textvariable=self.project_path_var).grid(row=2, column=0, sticky=EW, pady=(4, 0))
+
+        header_buttons = ttk.Frame(header)
+        header_buttons.grid(row=0, column=1, rowspan=2, sticky=NE, padx=(8, 0), pady=(35, 0))
+        ttk.Button(
+            header_buttons, text="选择", command=self.choose_project_path, bootstyle="outline",
+        ).grid(row=0, column=0, sticky=EW)
+        ttk.Button(
+            header_buttons, text="刷新", command=self.refresh_git_status_with_output, bootstyle="outline",
+        ).grid(row=1, column=0, sticky=EW, pady=(8, 0))
+
+        # Row 2: repo / branch / sync / refresh toolbar
+        toolbar = ttk.Frame(header)
+        toolbar.grid(row=1, column=0, sticky=EW, pady=(10, 0))
+
+        self._header_repo = ttk.Label(toolbar, text="仓库: -", font=("Microsoft YaHei UI", 9, "bold"))
+        self._header_repo.pack(side=LEFT, padx=(0, 16))
+        self._header_branch = ttk.Label(toolbar, text="分支: -", font=("Microsoft YaHei UI", 9))
+        self._header_branch.pack(side=LEFT, padx=(0, 16))
+        self._header_sync = ttk.Label(toolbar, text="同步: -", font=("Microsoft YaHei UI", 9))
+        self._header_sync.pack(side=LEFT, padx=(0, 16))
+
+    def _build_status_bar(self, parent: ttk.Frame) -> None:
+        bar = ttk.Frame(parent)
+        bar.grid(row=1, column=0, sticky=EW)
+        sep = ttk.Separator(bar)
+        sep.pack(fill=X)
+        inner = ttk.Frame(bar)
+        inner.pack(fill=X, padx=16, pady=4)
+        inner.columnconfigure(1, weight=1)
+        ttk.Label(
+            inner,
+            text="状态",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            foreground="#334155",
+        ).grid(row=0, column=0, sticky=W, padx=(0, 10))
+        status_label = ttk.Label(
+            inner,
+            textvariable=self.status_display_var,
+            font=("Microsoft YaHei UI", 9),
+            foreground="#475569",
+            anchor=W,
+        )
+        status_label.grid(row=0, column=1, sticky=EW)
+        self.add_tooltip(status_label, "完整结果会在操作完成后通过弹窗或状态详情显示。")
+
+    def _make_card(
+        self,
+        parent: ttk.Frame,
+        title: str,
+        row: int,
+        column: int = 0,
+        *,
+        columnspan: int = 1,
+        sticky: str = EW,
+        padding: int = 10,
+        bootstyle: str = "default",
+        pady: tuple[int, int] = (0, 10),
+    ) -> ttkb.Labelframe:
+        card = ttkb.Labelframe(parent, text=title, padding=padding, bootstyle=bootstyle)
+        card.grid(row=row, column=column, columnspan=columnspan, sticky=sticky, pady=pady)
+        return card
+
+    def _button_grid(
+        self,
+        parent: ttk.Frame,
+        items: list[tuple[str, Callable[[], None], str]],
+        *,
+        columns: int,
+        primary: set[str] | None = None,
+    ) -> None:
+        primary = primary or set()
+        for col in range(columns):
+            parent.columnconfigure(col, weight=1, uniform="buttons")
+        for index, (label, command, tip) in enumerate(items):
+            button = ttk.Button(
+                parent,
+                text=label,
+                command=command,
+                bootstyle="primary" if label in primary else "outline",
+            )
+            button.grid(
+                row=index // columns,
+                column=index % columns,
+                sticky=EW,
+                padx=(0 if index % columns == 0 else 8, 0),
+                pady=(0 if index < columns else 8, 0),
+            )
+            self.add_tooltip(button, tip)
+
+    # ── New Project View ──────────────────────────────────────────
+
+    def _build_new_project_view(self, parent: ttk.Frame) -> ttk.Frame:
+        view = ttk.Frame(parent, padding=(14, 10, 14, 12))
+        view.columnconfigure(0, weight=2)
+        view.columnconfigure(1, weight=3)
+        view.rowconfigure(0, weight=1)
+
+        details = self._make_card(
+            view,
+            "新建项目",
+            0,
+            0,
+            sticky=NSEW,
+            pady=(0, 0),
+            padding=12,
+        )
+        details.columnconfigure(1, weight=1)
+
+        ttk.Label(details, text="创建位置").grid(row=0, column=0, sticky=E, padx=(0, 8), pady=4)
+        self.create_base_var = tk.StringVar(value=str(self.start_dir))
+        ttk.Entry(details, textvariable=self.create_base_var).grid(row=0, column=1, sticky=EW, pady=4)
+        ttk.Button(details, text="选择", command=self.choose_create_base, bootstyle="outline").grid(
+            row=0, column=2, padx=(8, 0), pady=4
+        )
+
+        ttk.Label(details, text="项目名称").grid(row=1, column=0, sticky=E, padx=(0, 8), pady=4)
+        self.project_name_var = tk.StringVar()
+        ttk.Entry(details, textvariable=self.project_name_var).grid(
+            row=1, column=1, columnspan=2, sticky=EW, pady=4
+        )
+
+        self.init_git_on_create_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            details, text="创建后初始化 Git",
+            variable=self.init_git_on_create_var,
+        ).grid(row=2, column=1, columnspan=2, sticky=W, pady=(8, 4))
+
+        ttk.Label(
+            details,
+            text="模板文件会复制到新项目目录中；复制后不再跟随源模板自动更新。",
+            foreground="#6b7280",
+            font=("Microsoft YaHei UI", 9),
+            wraplength=340,
+        ).grid(row=3, column=0, columnspan=3, sticky=EW, pady=(8, 14))
+
+        ttk.Button(
+            details,
+            text="创建项目",
+            command=self.create_project,
+            bootstyle="primary",
+        ).grid(row=4, column=1, columnspan=2, sticky=EW)
+
+        templates = self._make_card(
+            view,
+            "ModuleFiles 模板",
+            0,
+            1,
+            sticky=NSEW,
+            pady=(0, 0),
+            padding=12,
+        )
+        templates.columnconfigure(0, weight=1)
+        templates.rowconfigure(1, weight=1)
+
+        btn_row = ttk.Frame(templates)
+        btn_row.grid(row=0, column=0, sticky=EW, pady=(0, 8))
+        ttk.Button(btn_row, text="全选", command=self.select_all_modules, bootstyle="outline").pack(side=LEFT)
+        ttk.Button(btn_row, text="全不选", command=self.clear_modules, bootstyle="outline").pack(side=LEFT, padx=8)
+        ttk.Button(btn_row, text="刷新", command=self._load_module_files, bootstyle="outline").pack(side=RIGHT)
+
+        module_frame = ttk.Frame(templates)
+        module_frame.grid(row=1, column=0, sticky=NSEW)
+        module_frame.columnconfigure(0, weight=1)
+        module_frame.rowconfigure(0, weight=1)
+        self.module_canvas = tk.Canvas(module_frame, highlightthickness=0, height=360)
+        scrollbar = ttk.Scrollbar(module_frame, orient=VERTICAL, command=self.module_canvas.yview)
+        self.module_inner = ttk.Frame(self.module_canvas)
+        self.module_inner.bind(
+            "<Configure>",
+            lambda _e: self.module_canvas.configure(scrollregion=self.module_canvas.bbox("all")),
+        )
+        self.module_canvas.create_window((0, 0), window=self.module_inner, anchor=NW)
+        self.module_canvas.configure(yscrollcommand=scrollbar.set)
+        self.module_canvas.grid(row=0, column=0, sticky=NSEW)
+        scrollbar.grid(row=0, column=1, sticky=NS)
+
+        return view
+
+    # ── Overview View ─────────────────────────────────────────────
+
+    def _build_overview_view(self, parent: ttk.Frame) -> ttk.Frame:
+        view = ttk.Frame(parent, padding=(14, 10, 14, 12))
+        view.columnconfigure(0, weight=1)
+        view.columnconfigure(1, weight=1)
+        view.rowconfigure(2, weight=1)
+
+        # Status cards
+        cards = ttk.Frame(view)
+        cards.grid(row=0, column=0, columnspan=2, sticky=EW, pady=(0, 12))
+        for i in range(4):
+            cards.columnconfigure(i, weight=1)
+
+        self._make_status_card(cards, 0, "当前分支", self.current_branch_var)
+        self._make_status_card(cards, 1, "上游分支", self.upstream_var)
+        self._make_status_card(cards, 2, "同步状态", self.sync_state_var)
+        self._make_status_card(cards, 3, "工作区", self.worktree_state_var)
+
+        # Repo config
+        config_card = self._make_card(view, "仓库配置", 1, 0, sticky=NSEW, pady=(0, 10))
+        config_card.columnconfigure(1, weight=1)
+        config_card.columnconfigure(3, weight=1)
+
+        ttk.Label(config_card, text="仓库名").grid(row=0, column=0, sticky=E, padx=(0, 8), pady=4)
+        repo_entry = ttk.Entry(config_card, textvariable=self.repo_name_var)
+        repo_entry.grid(row=0, column=1, sticky=EW, padx=(0, 16), pady=4)
+        repo_entry.bind("<FocusOut>", lambda _e: self.refresh_git_status())
+        repo_entry.bind("<Return>", lambda _e: self.refresh_git_status())
+
+        ttk.Label(config_card, text="默认分支").grid(row=0, column=2, sticky=E, padx=(0, 8), pady=4)
+        ttk.Entry(config_card, textvariable=self.branch_var).grid(row=0, column=3, sticky=EW, pady=4)
+
+        config_btns = ttk.Frame(config_card)
+        config_btns.grid(row=1, column=0, columnspan=4, sticky=EW, pady=(8, 0))
+        self._button_grid(
+            config_btns,
+            [
+                ("刷新", self.refresh_git_status_with_output, "重新读取项目状态。"),
+                ("检测远程", self.check_remote, "检查 GitHub 远程仓库连接。"),
+                ("重置 Git", self.reset_git_config, "重置 Git 身份、忽略规则和远程地址。"),
+                ("状态详情", self.git_status_detail, "查看当前 Git 状态详情。"),
+            ],
+            columns=4,
+        )
+
+        actions_card = self._make_card(view, "快捷入口", 1, 1, sticky=NSEW, pady=(0, 10))
+        for col in range(3):
+            actions_card.columnconfigure(col, weight=1, uniform="overview_nav")
+        for col, (label, nav, style) in enumerate(
+            [
+                ("分支管理", "分支", "outline"),
+                ("提交同步", "提交", "success"),
+                ("版本发布", "发布", "success"),
+            ]
+        ):
+            ttk.Button(
+                actions_card,
+                text=label,
+                command=lambda n=nav: self._show_view(n),
+                bootstyle=style,
+            ).grid(row=0, column=col, sticky=EW, padx=(0 if col == 0 else 8, 0), ipady=4)
+
+        tips_card = self._make_card(view, "工作流提示", 2, 0, columnspan=2, sticky=NSEW, pady=(0, 0))
+        tips_card.columnconfigure(0, weight=1)
+        ttk.Label(
+            tips_card,
+            text=(
+                "概览页只展示仓库整体状态和常用入口。具体操作请进入左侧菜单："
+                "新建项目负责模板复制和初始化；分支页负责切换/创建分支；"
+                "提交页负责暂存、提交、同步和历史；发布页负责 GitHub Release 与资产上传。"
+            ),
+            wraplength=900,
+            foreground="#4b5563",
+            font=("Microsoft YaHei UI", 10),
+        ).grid(row=0, column=0, sticky=NW)
+
+        return view
+
+    def _make_status_card(self, parent: ttk.Frame, col: int, title: str, var: tk.StringVar) -> None:
+        card = ttkb.Labelframe(parent, text=title, padding=10, bootstyle="default")
+        card.grid(row=0, column=col, padx=4, sticky=EW)
+        ttk.Label(card, textvariable=var, font=("Microsoft YaHei UI", 12, "bold")).pack(anchor=W)
+
+    # ── Branches View ─────────────────────────────────────────────
+
+    def _build_branches_view(self, parent: ttk.Frame) -> ttk.Frame:
+        view = ttk.Frame(parent, padding=(14, 10, 14, 12))
+        view.columnconfigure(0, weight=1)
+        view.rowconfigure(1, weight=1)
+
+        # Branch controls
+        controls = self._make_card(view, "分支操作", 0, 0, sticky=EW, pady=(0, 12))
+        controls.columnconfigure(0, minsize=70)
+        controls.columnconfigure(1, weight=1)
+        controls.columnconfigure(2, minsize=128)
+
+        ttk.Label(controls, text="切换到").grid(row=0, column=0, sticky=E, padx=(0, 8), pady=4)
+        self.branch_select_var = tk.StringVar()
+        self.branch_combo = ttk.Combobox(controls, textvariable=self.branch_select_var, state="readonly")
+        self.branch_combo.grid(row=0, column=1, sticky=EW, padx=(0, 8), pady=4)
+        ttk.Button(controls, text="切换", command=self.checkout_selected_branch, bootstyle="primary").grid(row=0, column=2, sticky=EW, pady=4)
+
+        ttk.Label(controls, text="新分支").grid(row=1, column=0, sticky=E, padx=(0, 8), pady=4)
+        self.new_branch_var = tk.StringVar()
+        ttk.Entry(controls, textvariable=self.new_branch_var).grid(row=1, column=1, sticky=EW, padx=(0, 8), pady=4)
+        ttk.Button(controls, text="创建并切换", command=self.create_branch, bootstyle="outline").grid(row=1, column=2, sticky=EW, pady=4)
+
+        ttk.Label(
+            controls,
             text="本地分支可直接切换；origin/* 是远端引用，切换时会创建或切到对应的本地跟踪分支。",
-            style="Muted.TLabel",
-        ).grid(row=2, column=0, sticky=tk.W, padx=10, pady=(0, 6))
+            font=("Microsoft YaHei UI", 9), foreground="#6b7280",
+        ).grid(row=2, column=0, columnspan=3, sticky=W, pady=(6, 0))
+
+        # Branch list
+        list_card = self._make_card(view, "分支列表", 1, 0, sticky=NSEW, padding=8, pady=(0, 12))
+        list_card.grid(row=1, column=0, sticky=NSEW)
+        list_card.columnconfigure(0, weight=1)
+        list_card.rowconfigure(0, weight=1)
 
         self.branch_tree = ttk.Treeview(
-            left,
+            list_card,
             columns=("name", "kind", "upstream", "commit", "date", "subject"),
             show="headings",
-            height=11,
         )
         for column, heading, width, stretch in [
             ("name", "分支", 170, False),
@@ -914,97 +1145,98 @@ class ProgramPmApp(tk.Tk):
             ("subject", "说明", 300, True),
         ]:
             self.branch_tree.heading(column, text=heading)
-            self.branch_tree.column(
-                column,
-                width=width,
-                minwidth=width,
-                anchor=tk.W,
-                stretch=stretch,
-            )
-        branch_scroll_x = ttk.Scrollbar(left, orient=tk.HORIZONTAL, command=self.branch_tree.xview)
-        self.branch_tree.configure(xscrollcommand=branch_scroll_x.set)
-        self.branch_tree.grid(row=3, column=0, sticky=tk.NSEW, padx=10, pady=(0, 0))
-        branch_scroll_x.grid(row=4, column=0, sticky=tk.EW, padx=10, pady=(0, 8))
+            self.branch_tree.column(column, width=width, minwidth=width, anchor=W, stretch=stretch)
 
-        git_actions = ttk.Frame(left, style="Panel.TFrame")
-        git_actions.grid(row=5, column=0, sticky=tk.EW, padx=10, pady=(0, 10))
-        for column in range(3):
-            git_actions.columnconfigure(column, weight=1, uniform="left_actions")
-        for index, (label, command, tooltip) in enumerate([
-            ("刷新", self.refresh_git_status_with_output, "重新读取分支、状态和 release 信息。"),
-            ("检测远程", self.check_remote, "检查当前 origin 或仓库名对应的 GitHub SSH 443 远程。"),
-            ("重置 Git", self.reset_git_config, "按当前仓库名重置 Git 身份、忽略规则和远程地址。"),
-            ("获取", self.git_fetch, "从远程仓库获取最新分支信息，但不修改本地文件。"),
-            ("拉取", self.git_pull, "从当前分支的上游或 origin 同名分支拉取更新。"),
-            ("状态详情", self.git_status_detail, "显示当前分支、跟踪分支和文件改动列表。"),
-        ]):
-            self.make_button(git_actions, label, command, tooltip, width=9).grid(
-                row=index // 3,
-                column=index % 3,
-                sticky=tk.EW,
-                padx=(0 if index % 3 == 0 else 6, 0),
-                pady=(0 if index < 3 else 6, 0),
-            )
+        branch_scroll_y = ttk.Scrollbar(list_card, orient=VERTICAL, command=self.branch_tree.yview)
+        branch_scroll_x = ttk.Scrollbar(list_card, orient=HORIZONTAL, command=self.branch_tree.xview)
+        self.branch_tree.configure(yscrollcommand=branch_scroll_y.set, xscrollcommand=branch_scroll_x.set)
+        self.branch_tree.grid(row=0, column=0, sticky=NSEW)
+        branch_scroll_y.grid(row=0, column=1, sticky=NS)
+        branch_scroll_x.grid(row=1, column=0, sticky=EW)
 
-        ttk.Label(right, text="提交与发布", style="Section.TLabel").grid(
-            row=0, column=0, sticky=tk.W, padx=10, pady=(10, 4)
-        )
-        commit_panel = ttk.Frame(right, style="Panel.TFrame")
-        commit_panel.grid(row=1, column=0, sticky=tk.EW, padx=10, pady=(2, 8))
-        commit_panel.columnconfigure(0, minsize=54)
-        commit_panel.columnconfigure(1, weight=1)
-        commit_panel.columnconfigure(2, minsize=54)
-        commit_panel.columnconfigure(3, weight=1)
-        ttk.Label(commit_panel, text="仓库名", style="Panel.TLabel").grid(
-            row=0, column=0, sticky=tk.E, padx=(0, 8), pady=3
-        )
-        repo_entry = ttk.Entry(commit_panel, textvariable=self.repo_name_var)
-        repo_entry.grid(row=0, column=1, sticky=tk.EW, pady=3)
-        repo_entry.bind("<FocusOut>", lambda _event: self.refresh_git_status())
-        repo_entry.bind("<Return>", lambda _event: self.refresh_git_status())
-        ttk.Label(commit_panel, text="默认分支", style="Panel.TLabel").grid(
-            row=0, column=2, sticky=tk.E, padx=(12, 8), pady=3
-        )
-        ttk.Entry(commit_panel, textvariable=self.branch_var).grid(
-            row=0, column=3, sticky=tk.EW, pady=3
-        )
-        ttk.Label(commit_panel, text="提交信息", style="Panel.TLabel").grid(
-            row=1, column=0, sticky=tk.E, padx=(0, 8), pady=3
-        )
-        ttk.Entry(commit_panel, textvariable=self.commit_message_var).grid(
-            row=1, column=1, columnspan=3, sticky=tk.EW, pady=3
-        )
-        commit_actions = ttk.Frame(commit_panel, style="Panel.TFrame")
-        commit_actions.grid(row=2, column=0, columnspan=4, sticky=tk.EW, pady=(8, 0))
-        for column in range(4):
-            commit_actions.columnconfigure(column, weight=1, uniform="commit_actions")
-        for column, (label, command, tooltip) in enumerate(
+        git_card = self._make_card(view, "远程与配置", 2, 0, sticky=EW, pady=(0, 0))
+        self._button_grid(
+            git_card,
             [
-                ("添加", self.git_add_all, "暂存当前项目所有改动。"),
-                ("提交", self.git_commit, "用上方提交信息创建本地提交。"),
-                ("推送", self.git_push, "先确认远程仓库可访问，再推送当前分支并设置上游。"),
-                ("记录", self.git_log, "显示最近 20 条提交记录。"),
-            ]
-        ):
-            self.make_button(commit_actions, label, command, tooltip).grid(
-                row=0, column=column, sticky=tk.EW, padx=(0 if column == 0 else 6, 0)
-            )
+                ("获取远程", self.git_fetch, "获取远程分支信息。"),
+                ("检测远程", self.check_remote, "检查 GitHub 远程连接。"),
+                ("重置 Git", self.reset_git_config, "重置当前项目的 Git 配置。"),
+                ("状态详情", self.git_status_detail, "查看当前分支和文件状态。"),
+            ],
+            columns=4,
+        )
 
-        release_panel = ttk.Frame(right, style="Panel.TFrame")
-        release_panel.grid(row=2, column=0, sticky=tk.NSEW, padx=10, pady=(0, 8))
-        release_panel.columnconfigure(0, weight=1)
-        release_panel.rowconfigure(2, weight=1)
-        ttk.Label(release_panel, text="Latest Release", style="Muted.TLabel").grid(
-            row=0, column=0, sticky=tk.W
+        return view
+
+    # ── Commits View ──────────────────────────────────────────────
+
+    def _build_commits_view(self, parent: ttk.Frame) -> ttk.Frame:
+        view = ttk.Frame(parent, padding=(14, 10, 14, 12))
+        view.columnconfigure(0, weight=1)
+        view.columnconfigure(1, weight=1)
+        view.rowconfigure(1, weight=1)
+
+        # Commit card
+        commit_card = self._make_card(view, "提交", 0, 0, sticky=EW, pady=(0, 12))
+        commit_card.columnconfigure(1, weight=1)
+        commit_card.columnconfigure(2, minsize=92)
+        commit_card.columnconfigure(3, minsize=92)
+
+        ttk.Label(commit_card, text="提交信息").grid(row=0, column=0, sticky=E, padx=(0, 8), pady=4)
+        ttk.Entry(commit_card, textvariable=self.commit_message_var).grid(row=0, column=1, sticky=EW, padx=(0, 8), pady=4)
+        ttk.Button(commit_card, text="添加全部", command=self.git_add_all, bootstyle="outline").grid(row=0, column=2, sticky=EW, padx=(0, 8), pady=4)
+        ttk.Button(commit_card, text="提交", command=self.git_commit, bootstyle="primary").grid(row=0, column=3, sticky=EW, pady=4)
+
+        # Sync card
+        sync_card = self._make_card(view, "同步", 0, 1, sticky=EW, pady=(0, 12))
+        for col in range(3):
+            sync_card.columnconfigure(col, weight=1, uniform="sync_actions")
+
+        self._button_grid(
+            sync_card,
+            [
+                ("推送", self.git_push, "推送当前分支到远程。"),
+                ("拉取", self.git_pull, "从上游拉取更新。"),
+                ("获取", self.git_fetch, "获取远程分支信息。"),
+            ],
+            columns=3,
+            primary={"推送"},
         )
-        ttk.Label(release_panel, textvariable=self.latest_release_var, style="Panel.TLabel").grid(
-            row=1, column=0, sticky=tk.W, pady=(0, 8)
-        )
+
+        # History card
+        history_card = self._make_card(view, "提交历史 / 操作记录", 1, 0, columnspan=2, sticky=NSEW, padding=8, pady=(0, 0))
+        history_card.columnconfigure(0, weight=1)
+        history_card.rowconfigure(0, weight=1)
+
+        self.log_text = tk.Text(history_card, height=10, wrap=WORD, font=("Consolas", 9), state=DISABLED)
+        log_scroll = ttk.Scrollbar(history_card, orient=VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        self.log_text.grid(row=0, column=0, sticky=NSEW)
+        log_scroll.grid(row=0, column=1, sticky=NS)
+
+        ttk.Button(history_card, text="刷新最近提交", command=self.git_log, bootstyle="outline").grid(row=1, column=0, sticky=W, pady=(8, 0))
+
+        return view
+
+    # ── Releases View ─────────────────────────────────────────────
+
+    def _build_releases_view(self, parent: ttk.Frame) -> ttk.Frame:
+        view = ttk.Frame(parent, padding=(14, 10, 14, 12))
+        view.columnconfigure(0, weight=1)
+        view.rowconfigure(0, weight=1)
+
+        # Release list
+        list_card = self._make_card(view, "Release 列表", 0, 0, sticky=NSEW, padding=8, pady=(0, 12))
+        list_card.grid(row=0, column=0, sticky=NSEW, pady=(0, 12))
+        list_card.columnconfigure(0, weight=1)
+        list_card.rowconfigure(1, weight=1)
+
+        ttk.Label(list_card, textvariable=self.latest_release_var, font=("Microsoft YaHei UI", 9)).grid(row=0, column=0, sticky=W, pady=(0, 4))
+
         self.release_tree = ttk.Treeview(
-            release_panel,
+            list_card,
             columns=("title", "status", "tag", "published", "source"),
             show="headings",
-            height=8,
         )
         for column, heading, width, stretch in [
             ("title", "Release", 160, True),
@@ -1014,105 +1246,50 @@ class ProgramPmApp(tk.Tk):
             ("source", "来源", 60, False),
         ]:
             self.release_tree.heading(column, text=heading)
-            self.release_tree.column(
-                column,
-                width=width,
-                minwidth=width,
-                anchor=tk.W,
-                stretch=stretch,
-            )
-        release_scroll_y = ttk.Scrollbar(release_panel, orient=tk.VERTICAL, command=self.release_tree.yview)
-        release_scroll_x = ttk.Scrollbar(release_panel, orient=tk.HORIZONTAL, command=self.release_tree.xview)
-        self.release_tree.configure(
-            yscrollcommand=release_scroll_y.set,
-            xscrollcommand=release_scroll_x.set,
-        )
-        self.release_tree.grid(row=2, column=0, sticky=tk.NSEW)
-        release_scroll_y.grid(row=2, column=1, sticky=tk.NS)
-        release_scroll_x.grid(row=3, column=0, sticky=tk.EW)
+            self.release_tree.column(column, width=width, minwidth=width, anchor=W, stretch=stretch)
 
-        release_form = ttk.Frame(right, style="Panel.TFrame")
-        release_form.grid(row=3, column=0, sticky=tk.EW, padx=10, pady=(0, 10))
-        release_form.columnconfigure(0, minsize=36)
-        release_form.columnconfigure(1, weight=1)
-        release_form.columnconfigure(2, minsize=36)
-        release_form.columnconfigure(3, weight=1)
+        release_scroll_y = ttk.Scrollbar(list_card, orient=VERTICAL, command=self.release_tree.yview)
+        release_scroll_x = ttk.Scrollbar(list_card, orient=HORIZONTAL, command=self.release_tree.xview)
+        self.release_tree.configure(yscrollcommand=release_scroll_y.set, xscrollcommand=release_scroll_x.set)
+        self.release_tree.grid(row=1, column=0, sticky=NSEW)
+        release_scroll_y.grid(row=1, column=1, sticky=NS)
+        release_scroll_x.grid(row=2, column=0, sticky=EW)
+
+        # Create release form
+        form_card = self._make_card(view, "创建 Release", 1, 0, sticky=EW, pady=(0, 0))
+        form_card.grid(row=1, column=0, sticky=EW)
+        form_card.columnconfigure(1, weight=1)
+        form_card.columnconfigure(3, weight=1)
+
         self.release_tag_var = tk.StringVar(value="v1.0.0")
         self.release_title_var = tk.StringVar()
         self.release_notes_var = tk.StringVar()
         self.release_assets_var = tk.StringVar()
         self.release_draft_var = tk.BooleanVar(value=False)
         self.release_prerelease_var = tk.BooleanVar(value=False)
-        ttk.Label(release_form, text="Tag", style="Panel.TLabel").grid(
-            row=0, column=0, sticky=tk.E, padx=(0, 8), pady=3
-        )
-        ttk.Entry(release_form, textvariable=self.release_tag_var).grid(
-            row=0, column=1, sticky=tk.EW, pady=3
-        )
-        ttk.Label(release_form, text="标题", style="Panel.TLabel").grid(
-            row=0, column=2, sticky=tk.E, padx=(12, 8), pady=3
-        )
-        ttk.Entry(release_form, textvariable=self.release_title_var).grid(
-            row=0, column=3, sticky=tk.EW, pady=3
-        )
-        ttk.Label(release_form, text="说明", style="Panel.TLabel").grid(
-            row=1, column=0, sticky=tk.E, padx=(0, 8), pady=3
-        )
-        ttk.Entry(release_form, textvariable=self.release_notes_var).grid(
-            row=1, column=1, columnspan=3, sticky=tk.EW, pady=3
-        )
-        ttk.Label(release_form, text="资产", style="Panel.TLabel").grid(
-            row=2, column=0, sticky=tk.E, padx=(0, 8), pady=3
-        )
-        ttk.Entry(release_form, textvariable=self.release_assets_var).grid(
-            row=2, column=1, columnspan=2, sticky=tk.EW, pady=3
-        )
-        self.make_button(
-            release_form,
-            "选择文件",
-            self.choose_release_assets,
-            "选择要上传到 GitHub Release 的安装包、压缩包或其他附件。",
-            width=9,
-        ).grid(row=2, column=3, sticky=tk.EW, padx=(8, 0), pady=3)
-        ttk.Checkbutton(
-            release_form,
-            text="Draft",
-            variable=self.release_draft_var,
-            style="Panel.TCheckbutton",
-        ).grid(row=3, column=1, sticky=tk.W, pady=(8, 0))
-        ttk.Checkbutton(
-            release_form,
-            text="Prerelease",
-            variable=self.release_prerelease_var,
-            style="Panel.TCheckbutton",
-        ).grid(row=3, column=2, sticky=tk.W, pady=(8, 0))
-        self.make_button(
-            release_form,
-            "发布 Release",
-            self.create_release,
-            "用 GitHub CLI 在当前分支或提交上创建 GitHub Release。",
-            width=9,
-        ).grid(row=3, column=3, sticky=tk.EW, pady=(8, 0))
 
-        bottom = ttk.Frame(shell, style="Panel.TFrame")
-        bottom.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
-        bottom.columnconfigure(0, weight=1)
-        self.status_var = tk.StringVar(value="未检测")
-        ttk.Label(bottom, textvariable=self.status_var, style="Panel.TLabel").grid(
-            row=0, column=0, sticky=tk.EW, padx=10, pady=8
-        )
+        ttk.Label(form_card, text="Tag").grid(row=0, column=0, sticky=E, padx=(0, 8), pady=4)
+        ttk.Entry(form_card, textvariable=self.release_tag_var).grid(row=0, column=1, sticky=EW, padx=(0, 16), pady=3)
+        ttk.Label(form_card, text="标题").grid(row=0, column=2, sticky=E, padx=(0, 8), pady=4)
+        ttk.Entry(form_card, textvariable=self.release_title_var).grid(row=0, column=3, sticky=EW, pady=3)
 
-    def _make_metric(
-        self,
-        parent: tk.Widget,
-        column: int,
-        title: str,
-        variable: tk.StringVar,
-    ) -> None:
-        cell = ttk.Frame(parent, style="Panel.TFrame")
-        cell.grid(row=0, column=column, sticky=tk.EW, padx=12, pady=10)
-        ttk.Label(cell, text=title, style="Muted.TLabel").pack(anchor=tk.W)
-        ttk.Label(cell, textvariable=variable, style="Section.TLabel").pack(anchor=tk.W)
+        ttk.Label(form_card, text="说明").grid(row=1, column=0, sticky=E, padx=(0, 8), pady=4)
+        ttk.Entry(form_card, textvariable=self.release_notes_var).grid(row=1, column=1, columnspan=3, sticky=EW, pady=3)
+
+        ttk.Label(form_card, text="资产").grid(row=2, column=0, sticky=E, padx=(0, 8), pady=4)
+        ttk.Entry(form_card, textvariable=self.release_assets_var).grid(row=2, column=1, columnspan=2, sticky=EW, pady=3)
+        ttk.Button(form_card, text="选择文件", command=self.choose_release_assets, bootstyle="outline").grid(row=2, column=3, sticky=EW, padx=(8, 0), pady=3)
+
+        opts = ttk.Frame(form_card)
+        opts.grid(row=3, column=0, columnspan=4, sticky=EW, pady=(8, 0))
+        opts.columnconfigure(2, weight=1)
+        ttk.Checkbutton(opts, text="Draft", variable=self.release_draft_var).grid(row=0, column=0, sticky=W)
+        ttk.Checkbutton(opts, text="Prerelease", variable=self.release_prerelease_var).grid(row=0, column=1, sticky=W, padx=(16, 0))
+        ttk.Button(opts, text="发布 Release", command=self.create_release, bootstyle="primary").grid(row=0, column=3, sticky=E)
+
+        return view
+
+    # ── Module Files ──────────────────────────────────────────────
 
     def _load_module_files(self) -> None:
         for child in self.module_inner.winfo_children():
@@ -1123,7 +1300,7 @@ class ProgramPmApp(tk.Tk):
             ttk.Label(
                 self.module_inner,
                 text=f"未找到 ModuleFiles: {MODULEFILES_DIR}",
-            ).pack(anchor=tk.W, padx=8, pady=8)
+            ).pack(anchor=W, padx=8, pady=8)
             return
         for path in module_files:
             var = tk.BooleanVar(value=False)
@@ -1132,7 +1309,7 @@ class ProgramPmApp(tk.Tk):
                 self.module_inner,
                 text=f"{path.name}  ->  {path}",
                 variable=var,
-            ).pack(anchor=tk.W, padx=8, pady=3)
+            ).pack(anchor=W, padx=8, pady=3)
 
     def select_all_modules(self) -> None:
         for var in self.module_vars.values():
@@ -1184,10 +1361,7 @@ class ProgramPmApp(tk.Tk):
                     project_path.rmdir()
                 except OSError:
                     pass
-            messagebox.showerror(
-                "拷贝失败",
-                f"无法将模板文件拷贝到项目目录。\n\n{exc}",
-            )
+            messagebox.showerror("拷贝失败", f"无法将模板文件拷贝到项目目录。\n\n{exc}")
             return
 
         file_summary = f"已拷贝 {len(selected)} 个文件" if selected else "未拷贝文件"
@@ -1203,32 +1377,20 @@ class ProgramPmApp(tk.Tk):
             if failed:
                 messagebox.showwarning(
                     "项目已创建，Git 初始化未完成",
-                    f"已创建项目：{project_path}\n\n"
-                    f"Git 初始化失败：{failed.stderr or failed.stdout}",
+                    f"已创建项目：{project_path}\n\nGit 初始化失败：{failed.stderr or failed.stdout}",
                 )
             else:
-                messagebox.showinfo(
-                    "完成",
-                    f"已创建项目并初始化 Git：{project_path}\n"
-                    f"{file_summary}",
-                )
+                messagebox.showinfo("完成", f"已创建项目并初始化 Git：{project_path}\n{file_summary}")
         else:
-            messagebox.showinfo(
-                "完成",
-                f"已创建项目：{project_path}\n"
-                f"{file_summary}",
-            )
+            messagebox.showinfo("完成", f"已创建项目：{project_path}\n{file_summary}")
         self.refresh_git_status()
+
+    # ── Git Operations ────────────────────────────────────────────
 
     def project_path(self) -> Path:
         return Path(self.project_path_var.get()).expanduser()
 
     def sync_repo_name_from_git_context(self) -> tuple[str | None, str]:
-        """Set the repository name from origin, falling back to the folder name.
-
-        Ref: Python Standard Library, pathlib.PurePath.name:
-        https://docs.python.org/3/library/pathlib.html#pathlib.PurePath.name
-        """
         project_path = self.project_path()
         remote = run_command(["git", "remote", "get-url", REMOTE_NAME], project_path)
         remote_name = (
@@ -1300,8 +1462,7 @@ class ProgramPmApp(tk.Tk):
             combo_values.append(item.name)
             kind = "远端" if item.is_remote else "本地"
             self.branch_tree.insert(
-                "",
-                tk.END,
+                "", tk.END,
                 values=(display, kind, item.upstream, item.commit, item.date, item.subject),
             )
         self.branch_combo["values"] = combo_values
@@ -1319,15 +1480,8 @@ class ProgramPmApp(tk.Tk):
             self.latest_release_var.set(release_error or "暂无 release/tag")
         for release in releases:
             self.release_tree.insert(
-                "",
-                tk.END,
-                values=(
-                    release.title,
-                    release.status,
-                    release.tag,
-                    release.published_at,
-                    release.source,
-                ),
+                "", tk.END,
+                values=(release.title, release.status, release.tag, release.published_at, release.source),
             )
 
     def checkout_selected_branch(self) -> None:
@@ -1340,7 +1494,7 @@ class ProgramPmApp(tk.Tk):
         def worker() -> None:
             self.append_command_start("切换分支")
             if target.startswith(f"{REMOTE_NAME}/"):
-                local_name = target[len(f"{REMOTE_NAME}/") :]
+                local_name = target[len(f"{REMOTE_NAME}/"):]
                 local_exists = run_command(["git", "show-ref", "--verify", f"refs/heads/{local_name}"], path)
                 command = (
                     ["git", "switch", local_name]
@@ -1399,11 +1553,7 @@ class ProgramPmApp(tk.Tk):
         tag = self.release_tag_var.get().strip()
         title = self.release_title_var.get().strip() or tag
         notes = self.release_notes_var.get().strip()
-        assets = [
-            item.strip()
-            for item in self.release_assets_var.get().split(";")
-            if item.strip()
-        ]
+        assets = [item.strip() for item in self.release_assets_var.get().split(";") if item.strip()]
         if not tag:
             messagebox.showerror("发布失败", "请输入 release tag。")
             return
@@ -1417,27 +1567,15 @@ class ProgramPmApp(tk.Tk):
             return
         dirty_count = git_dirty_count(path)
         if dirty_count and not messagebox.askyesno(
-            "工作区有改动",
-            f"当前工作区还有 {dirty_count} 项未提交改动，仍然继续发布？",
+            "工作区有改动", f"当前工作区还有 {dirty_count} 项未提交改动，仍然继续发布？",
         ):
             return
 
         def worker() -> None:
             self.append_command_start("发布 Release")
-            # Ref: GitHub CLI manual, gh release create supports --target,
-            # --title, --notes, --draft, --prerelease, and --generate-notes.
             command = [
-                gh,
-                "release",
-                "create",
-                tag,
-                *assets,
-                "--repo",
-                repo,
-                "--target",
-                branch,
-                "--title",
-                title,
+                gh, "release", "create", tag, *assets,
+                "--repo", repo, "--target", branch, "--title", title,
             ]
             if notes:
                 command.extend(["--notes", notes])
@@ -1461,6 +1599,8 @@ class ProgramPmApp(tk.Tk):
             self.after(0, self.refresh_git_status)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ── Async Output ──────────────────────────────────────────────
 
     def append_command_start(self, command_name: str) -> None:
         self.output_queue.put(("start", command_name))
@@ -1490,6 +1630,12 @@ class ProgramPmApp(tk.Tk):
     def show_operation_dialog(self) -> None:
         body = "".join(self.dialog_lines).strip() or "操作完成。"
         self.status_var.set(body.splitlines()[0])
+        # Update log text in commits view
+        if hasattr(self, "log_text"):
+            self.log_text.configure(state=NORMAL)
+            self.log_text.insert(END, body + "\n")
+            self.log_text.see(END)
+            self.log_text.configure(state=DISABLED)
         if "失败" in body or "已停止" in body or "[exit" in body:
             messagebox.showerror(self.dialog_title, body)
         elif "提示" in body or "警告" in body:
@@ -1563,6 +1709,16 @@ class ProgramPmApp(tk.Tk):
     def refresh_git_status(self) -> None:
         self.status_var.set(self.collect_git_status_text())
         self.refresh_branch_and_release_views()
+        self._update_header_labels()
+
+    def _update_header_labels(self) -> None:
+        if hasattr(self, "_header_repo"):
+            self._header_repo.configure(text=f"仓库: {self.repo_name_var.get()}")
+        if hasattr(self, "_header_branch"):
+            self._header_branch.configure(text=f"分支: {self.current_branch_var.get()}")
+        if hasattr(self, "_header_sync"):
+            sync = self.sync_state_var.get()
+            self._header_sync.configure(text=f"同步: {sync}")
 
     def refresh_git_status_with_output(self) -> None:
         self.append_command_start("刷新本地 Git 状态")
@@ -1853,7 +2009,14 @@ def parse_args() -> argparse.Namespace:
     Ref: Python Standard Library, argparse:
     https://docs.python.org/3/library/argparse.html
     """
-    parser = argparse.ArgumentParser(description="Program PM GUI")
+    parser = argparse.ArgumentParser(description="Git Manager GUI")
+    parser.add_argument(
+        "path",
+        nargs="?",
+        type=Path,
+        default=None,
+        help="Project directory to open (used by right-click context menu).",
+    )
     parser.add_argument(
         "--cwd",
         type=Path,
@@ -1863,9 +2026,30 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resource_path(relative_name: str) -> Path:
+    """Resolve resource path for both dev and PyInstaller frozen mode."""
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    else:
+        base = Path(__file__).parent
+    return base / relative_name
+
+
 def main() -> None:
     args = parse_args()
-    start_dir = args.cwd.expanduser().resolve()
+    if args.path is not None:
+        start_dir = args.path.expanduser().resolve()
+    else:
+        start_dir = args.cwd.expanduser().resolve()
     os.chdir(start_dir)
-    app = ProgramPmApp(start_dir=start_dir)
+
+    app = GitManagerApp(start_dir=start_dir)
+
+    icon_path = resource_path("git_manager.ico")
+    if icon_path.exists():
+        try:
+            app.iconbitmap(str(icon_path))
+        except tk.TclError:
+            pass
+
     app.mainloop()
